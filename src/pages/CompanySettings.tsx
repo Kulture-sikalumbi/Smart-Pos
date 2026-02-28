@@ -7,13 +7,14 @@ import { useBranding } from '@/contexts/BrandingContext';
 import { useAuth } from '@/contexts/AuthContext';
 
 export default function CompanySettings() {
-  const { hasPermission } = useAuth();
-  const { settings, updateSettings, reset } = useBranding();
+  const { hasPermission, user } = useAuth();
+  const { settings, updateSettings, reset, saveToServer } = useBranding();
 
   const [localName, setLocalName] = useState(settings.appName);
   const [localTagline, setLocalTagline] = useState(settings.tagline ?? '');
   const [localPrimary, setLocalPrimary] = useState(settings.primaryColorHex);
   const [localLogo, setLocalLogo] = useState<string | undefined>(settings.logoDataUrl);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const canManage = hasPermission('manageSettings');
 
@@ -27,13 +28,26 @@ export default function CompanySettings() {
     [localName, localTagline, localPrimary, localLogo]
   );
 
-  const apply = () => {
+  const apply = async () => {
     if (!canManage) return;
-    updateSettings(preview);
+    const wasBrandPresent = brandExists;
+    const ok = await saveToServer(preview, selectedFile, user?.id);
+      if (ok) {
+      updateSettings(preview);
+      if (!wasBrandPresent) {
+        // After creating a new brand, send user to staff page to add team members
+        navigate('/app/staff');
+      }
+    }
   };
 
   const onLogoFile = async (file: File | null) => {
-    if (!file) return;
+    if (!file) {
+      setSelectedFile(null);
+      setLocalLogo(undefined);
+      return;
+    }
+    setSelectedFile(file);
     const reader = new FileReader();
     reader.onload = () => {
       const result = typeof reader.result === 'string' ? reader.result : undefined;
@@ -101,7 +115,7 @@ export default function CompanySettings() {
                 onChange={(e) => onLogoFile(e.target.files?.[0] ?? null)}
               />
               <div className="text-xs text-muted-foreground">
-                Stored locally for now (no backend yet).
+                Upload a logo from your device. It will be stored in Supabase storage.
               </div>
             </div>
 

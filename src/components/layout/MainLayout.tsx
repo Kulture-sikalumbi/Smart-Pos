@@ -27,8 +27,8 @@ export function MainLayout() {
 
   useOfflineOrderSync();
 
-  const isPosTerminal = location.pathname === '/pos' || location.pathname.startsWith('/pos/terminal');
-  const isSelfOrder = location.pathname.startsWith('/self-order/');
+  const isPosTerminal = location.pathname === '/app/pos' || location.pathname.startsWith('/app/pos/terminal');
+  const isSelfOrder = location.pathname.startsWith('/app/self-order/');
 
   if (isPosTerminal || isSelfOrder) {
     return (

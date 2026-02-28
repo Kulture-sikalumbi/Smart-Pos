@@ -1,5 +1,6 @@
-import { useSyncExternalStore } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { useSyncExternalStore, useState } from 'react';
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel } from '@/components/ui/alert-dialog';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Package,
@@ -39,66 +40,69 @@ import { useBranding } from '@/contexts/BrandingContext';
 import { getFeatureFlagsSnapshot, subscribeFeatureFlags } from '@/lib/featureFlagsStore';
 
 const navigationItems = [
-  { title: 'Dashboard', url: '/', icon: LayoutDashboard, permission: 'viewDashboard' as const },
+  { title: 'Dashboard', url: '/app', icon: LayoutDashboard, permission: 'viewDashboard' as const },
 ];
 
 const posItems = [
-  { title: 'POS Terminal', url: '/pos/terminal', icon: MonitorSmartphone, permission: 'accessPOS' as const },
-  { title: 'POS Menu', url: '/pos/menu', icon: Receipt, permission: 'manageSettings' as const },
-  { title: 'Table QR Codes', url: '/pos/table-qr', icon: QrCode, permission: 'accessPOS' as const },
-  { title: 'Tables', url: '/pos/tables', icon: Grid3X3, permission: 'accessPOS' as const },
-  { title: 'Cash Up', url: '/pos/cash-up', icon: Calculator, permission: 'performCashUp' as const },
-  { title: 'Kitchen Display', url: '/pos/kitchen', icon: UtensilsCrossed, permission: 'accessPOS' as const },
+  { title: 'POS Terminal', url: '/app/pos/terminal', icon: MonitorSmartphone, permission: 'accessPOS' as const },
+  { title: 'POS Menu', url: '/app/pos/menu', icon: Receipt, permission: 'manageSettings' as const },
+  { title: 'Table QR Codes', url: '/app/pos/table-qr', icon: QrCode, permission: 'accessPOS' as const },
+  { title: 'Tables', url: '/app/pos/tables', icon: Grid3X3, permission: 'accessPOS' as const },
+  { title: 'Cash Up', url: '/app/pos/cash-up', icon: Calculator, permission: 'performCashUp' as const },
+  { title: 'Kitchen Display', url: '/app/pos/kitchen', icon: UtensilsCrossed, permission: 'accessPOS' as const },
 ];
 
 const inventoryItems = [
-  { title: 'Stock Items', url: '/inventory/items', icon: Package, permission: 'viewInventory' as const },
-  { title: 'Stock Issues', url: '/inventory/issues', icon: ArrowRightLeft, permission: 'createStockIssues' as const },
-  { title: 'Stock Take', url: '/inventory/stock-take', icon: ClipboardCheck, permission: 'performStockTake' as const },
-  { title: 'Mthunzi-Smart', url: '/inventory/gaap', icon: Calculator, permission: 'viewInventory' as const },
-  { title: 'Transfers (QR)', url: '/inventory/transfers-qr', icon: QrCode, permission: 'viewInventory' as const },
+  { title: 'Stock Items', url: '/app/inventory/items', icon: Package, permission: 'viewInventory' as const },
+  { title: 'Stock Issues', url: '/app/inventory/issues', icon: ArrowRightLeft, permission: 'createStockIssues' as const },
+  { title: 'Stock Take', url: '/app/inventory/stock-take', icon: ClipboardCheck, permission: 'performStockTake' as const },
+  { title: 'Mthunzi-Smart', url: '/app/inventory/gaap', icon: Calculator, permission: 'viewInventory' as const },
+  { title: 'Transfers (QR)', url: '/app/inventory/transfers-qr', icon: QrCode, permission: 'viewInventory' as const },
 ];
 
 const manufacturingItems = [
-  { title: 'Recipes', url: '/manufacturing/recipes', icon: ChefHat, permission: 'viewRecipes' as const },
-  { title: 'Batch Production', url: '/manufacturing/production', icon: Boxes, permission: 'recordBatchProduction' as const },
+  { title: 'Recipes', url: '/app/manufacturing/recipes', icon: ChefHat, permission: 'viewRecipes' as const },
+  { title: 'Batch Production', url: '/app/manufacturing/production', icon: Boxes, permission: 'recordBatchProduction' as const },
 ];
 
 const operationsItems = [
-  { title: 'Purchases (GRV)', url: '/purchases', icon: ShoppingCart, permission: 'viewPurchases' as const },
-  { title: 'Staff', url: '/staff', icon: Users, permission: 'viewStaff' as const },
+  { title: 'Purchases (GRV)', url: '/app/purchases', icon: ShoppingCart, permission: 'viewPurchases' as const },
+  { title: 'Staff', url: '/app/staff', icon: Users, permission: 'viewStaff' as const },
 ];
 
 const reportItems = [
-  { title: 'All Reports', url: '/reports', icon: BarChart3, permission: 'viewReports' as const },
+  { title: 'All Reports', url: '/app/reports', icon: BarChart3, permission: 'viewReports' as const },
 ];
 
 const intelligenceItems = [
   // Owner-only for now (owner is the only role with `manageSettings`).
-  { title: 'Intelligence', url: '/intelligence', icon: Wand2, permission: 'manageSettings' as const },
+  { title: 'Intelligence', url: '/app/intelligence', icon: Wand2, permission: 'manageSettings' as const },
 ];
 
 const toolsItems = [
-  { title: 'Tax Engine', url: '/tax-demo', icon: Calculator, permission: 'viewReports' as const },
-  { title: 'Audit Dashboard', url: '/audit-dashboard', icon: BarChart3, permission: 'viewReports' as const },
-  { title: 'Security', url: '/security-demo', icon: MonitorSmartphone, permission: 'viewReports' as const },
-  { title: 'Variance', url: '/variance-demo', icon: BarChart3, permission: 'viewReports' as const },
-  { title: 'ZRA Invoice', url: '/zra-invoice-demo', icon: Receipt, permission: 'viewReports' as const },
-  { title: 'Report Share', url: '/report-share-demo', icon: BarChart3, permission: 'viewReports' as const },
-  { title: 'Receipts', url: '/receipt-demo', icon: Receipt, permission: 'viewReports' as const },
+  { title: 'Tax Engine', url: '/app/tax-demo', icon: Calculator, permission: 'viewReports' as const },
+  { title: 'Audit Dashboard', url: '/app/audit-dashboard', icon: BarChart3, permission: 'viewReports' as const },
+  { title: 'Security', url: '/app/security-demo', icon: MonitorSmartphone, permission: 'viewReports' as const },
+  { title: 'Variance', url: '/app/variance-demo', icon: BarChart3, permission: 'viewReports' as const },
+  { title: 'ZRA Invoice', url: '/app/zra-invoice-demo', icon: Receipt, permission: 'viewReports' as const },
+  { title: 'Report Share', url: '/app/report-share-demo', icon: BarChart3, permission: 'viewReports' as const },
+  { title: 'Receipts', url: '/app/receipt-demo', icon: Receipt, permission: 'viewReports' as const },
 ];
 
 export function AppSidebar() {
   const location = useLocation();
   const { state } = useSidebar();
   const { hasPermission } = useAuth();
-  const { settings } = useBranding();
+  const { settings, brandExists } = useBranding();
+  const navigate = useNavigate();
+  const [showCreateBrandDialog, setShowCreateBrandDialog] = useState(false);
+  const [requestedNav, setRequestedNav] = useState<string | null>(null);
   const flags = useSyncExternalStore(subscribeFeatureFlags, getFeatureFlagsSnapshot, getFeatureFlagsSnapshot);
   const intelligenceEnabled = Boolean(flags.flags.intelligenceWorkspace);
   const collapsed = state === 'collapsed';
 
   const isActive = (path: string) => {
-    if (path === '/') return location.pathname === '/';
+    if (path === '/app') return location.pathname === '/app' || location.pathname === '/app/';
     return location.pathname.startsWith(path);
   };
 
@@ -106,17 +110,26 @@ export function AppSidebar() {
 
   const NavItem = ({ item }: { item: NavItemType }) => {
     if (!hasPermission(item.permission)) return null;
+    const disabled = !brandExists;
     
     return (
       <SidebarMenuItem>
         <SidebarMenuButton asChild isActive={isActive(item.url)}>
-          <NavLink 
-            to={item.url} 
+          <NavLink
+            to={disabled ? '#' : item.url}
+            onClick={(e) => {
+              if (disabled) {
+                e.preventDefault();
+                setRequestedNav(item.url);
+                setShowCreateBrandDialog(true);
+              }
+            }}
             className={cn(
               "flex items-center gap-3 px-3 py-2 rounded-md transition-colors",
-              isActive(item.url) 
-                ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium" 
-                : "text-sidebar-foreground hover:bg-sidebar-accent/50"
+              isActive(item.url)
+                ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+                : "text-sidebar-foreground hover:bg-sidebar-accent/50",
+              disabled && 'opacity-60'
             )}
           >
             <item.icon className="h-4 w-4 shrink-0" />
@@ -125,6 +138,11 @@ export function AppSidebar() {
         </SidebarMenuButton>
       </SidebarMenuItem>
     );
+  };
+
+  const handleCreateBrandNow = () => {
+    setShowCreateBrandDialog(false);
+    navigate('/app/company-settings');
   };
 
   const hasAnyPermission = (items: NavItemType[]) => {
@@ -266,17 +284,39 @@ export function AppSidebar() {
         )}
       </SidebarContent>
 
+      <AlertDialog open={showCreateBrandDialog} onOpenChange={(o) => setShowCreateBrandDialog(o)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Create a brand first</AlertDialogTitle>
+            <AlertDialogDescription>
+              You need to create a brand before accessing the app. Create your brand now to continue.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex justify-end gap-2">
+            <AlertDialogCancel onClick={() => setShowCreateBrandDialog(false)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleCreateBrandNow}>Create Brand</AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <SidebarFooter className="p-4 border-t border-sidebar-border">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={isActive('/settings')}>
-              <NavLink 
-                to="/settings" 
+              <SidebarMenuButton asChild isActive={isActive('/app/settings')}>
+              <NavLink
+                to={brandExists ? '/app/settings' : '#'}
+                onClick={(e) => {
+                  if (!brandExists) {
+                    e.preventDefault();
+                    navigate('/app/company-settings');
+                  }
+                }}
                 className={cn(
                   "flex items-center gap-3 px-3 py-2 rounded-md transition-colors",
-                  isActive('/settings') 
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium" 
-                    : "text-sidebar-foreground hover:bg-sidebar-accent/50"
+                  isActive('/app/settings')
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
+                    : "text-sidebar-foreground hover:bg-sidebar-accent/50",
+                  !brandExists && 'opacity-60'
                 )}
               >
                 <Settings className="h-4 w-4 shrink-0" />
