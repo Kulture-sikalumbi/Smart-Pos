@@ -20,13 +20,26 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
   const [showSuccess, setShowSuccess] = useState(false);
   const [passwordErrors, setPasswordErrors] = useState<string[]>([]);
 
+  const withTimeout = async <T,>(p: Promise<T>, ms = 15000): Promise<T> => {
+    let timer: any;
+    const timeout = new Promise<never>((_, rej) => {
+      timer = setTimeout(() => rej(new Error('Request timed out. Please try again.')), ms);
+    });
+    try {
+      return (await Promise.race([p, timeout])) as T;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
   const googleSignIn = async () => {
     setError(null);
     setBusy(true);
     try {
-      await auth.signInWithGoogle();
+      await withTimeout(auth.signInWithGoogle(), 20000);
     } catch (err: any) {
       setError(err?.message || 'Google sign in failed');
+    } finally {
       setBusy(false);
     }
   };
@@ -42,11 +55,12 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
         setPasswordErrors(errs);
         if (errs.length > 0) {
           setError('Please fix password requirements');
-          setBusy(false);
           return;
         }
-        const res = await auth.signUp({ email: email.trim(), password, displayName: displayName || undefined });
-        setBusy(false);
+        const res = await withTimeout(
+          auth.signUp({ email: email.trim(), password, displayName: displayName || undefined }),
+          20000
+        );
         if (res.ok) {
           // If we were able to auto-sign-in on the backend, proceed into the app.
           if ((res as any).autoSignedIn) {
@@ -65,17 +79,17 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
           setError(res.message || 'Sign up failed');
         }
       } else {
-        const ok = await auth.login(email.trim(), password);
-      setBusy(false);
-      if (ok) {
-        if (!brandExists) navigate('/app/company-settings');
-        else navigate('/app');
-      } else {
-        setError('Invalid credentials');
-      }
+        const ok = await withTimeout(auth.login(email.trim(), password), 20000);
+        if (ok) {
+          if (!brandExists) navigate('/app/company-settings');
+          else navigate('/app');
+        } else {
+          setError('Invalid credentials');
+        }
       }
     } catch (err: any) {
       setError(err?.message || 'Login failed');
+    } finally {
       setBusy(false);
     }
   };

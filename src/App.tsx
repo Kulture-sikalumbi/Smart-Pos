@@ -13,7 +13,6 @@ import React, { Suspense } from "react";
 import { InstallPrompt } from "@/components/common/InstallPrompt";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { useBranding } from './contexts/BrandingContext';
 import { useNavigate } from 'react-router-dom';
 
 import Dashboard from "./pages/Dashboard";
@@ -44,6 +43,8 @@ import Landing from './pages/Landing';
 import AuthCallback from './pages/AuthCallback';
 import AdvancedGAAP from "./pages/inventory/AdvancedGAAP";
 
+const queryClient = new QueryClient();
+
 const TransferQR = React.lazy(() => import("./pages/inventory/TransferQR"));
 const POSTerminal = React.lazy(() => import("./pages/pos/POSTerminal"));
 const TableManagement = React.lazy(() => import("./pages/pos/TableManagement"));
@@ -69,7 +70,7 @@ const App = () => {
   );
 
   return (
-    <QueryClientProvider client={new QueryClient()}>
+    <QueryClientProvider client={queryClient}>
       <BrandingProvider>
         <CurrencyProvider>
           <TooltipProvider>
@@ -127,16 +128,17 @@ const App = () => {
 export default App;
 
 function BrandPromptModal() {
-  const { brandExists } = useBranding();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, user, profileReady } = useAuth();
   const [open, setOpen] = React.useState(false);
   const [dismissed, setDismissed] = React.useState(false);
   const navigate = useNavigate();
 
   React.useEffect(() => {
-    if (isAuthenticated && !brandExists && !dismissed) setOpen(true);
+    // Only prompt once we've synced the server profile at least once,
+    // and only if THIS user is not linked to a brand.
+    if (isAuthenticated && profileReady && !user?.brand_id && !dismissed) setOpen(true);
     else setOpen(false);
-  }, [isAuthenticated, brandExists, dismissed]);
+  }, [isAuthenticated, profileReady, user?.brand_id, dismissed]);
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) setDismissed(true); setOpen(o); }}>

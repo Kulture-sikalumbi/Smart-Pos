@@ -36,6 +36,12 @@ export default defineConfig(({ mode }) => ({
         ]
       },
       workbox: {
+        // Allow larger bundles to be precached (default is 2 MiB, which can break builds)
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        // Ensure new SW versions activate and clean up quickly to avoid stale-cache issues
+        cleanupOutdatedCaches: true,
+        clientsClaim: true,
+        skipWaiting: true,
         globPatterns: ["**/*.{js,css,html,svg,webmanifest,png,ico,jpg,jpeg,woff2}"],
         runtimeCaching: [
           {

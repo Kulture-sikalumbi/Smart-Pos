@@ -47,48 +47,38 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
 
   // Fetch server settings once on mount with branding fallback and cleanup
   useEffect(() => {
-    let timeoutId: any = null;
-    let finished = false;
+    let cancelled = false;
+    const withTimeout = async <T,>(p: Promise<T>, ms = 3000): Promise<T> => {
+      let timer: any;
+      const timeout = new Promise<never>((_, rej) => {
+        timer = setTimeout(() => rej(new Error('timeout')), ms);
+      });
+      try {
+        return (await Promise.race([p, timeout])) as T;
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
     (async () => {
       try {
-        // Branding Fallback
-        if (!settings && !settings.brandId) {
-          setSettings(defaultCompanySettings);
-          setBrandExists(false);
-          finished = true;
-          return;
-        }
-        if (!settings.brandId) {
-          setSettings(defaultCompanySettings);
-          setBrandExists(false);
-          finished = true;
-          return;
-        }
-        const server = await getCompanySettingsFromServer();
+        const server = await withTimeout(getCompanySettingsFromServer(), 3000);
+        if (cancelled) return;
+
         if (server) {
           setSettings((prev) => ({ ...prev, ...server }));
           setBrandExists(true);
-          finished = true;
-        }
-      } catch (err) {
-        setSettings(defaultCompanySettings);
-        setBrandExists(false);
-        finished = true;
-      } finally {
-        if (!finished) {
-          setSettings(defaultCompanySettings);
+        } else {
           setBrandExists(false);
         }
-      }
-    })();
-    timeoutId = setTimeout(() => {
-      if (!finished) {
-        setSettings(defaultCompanySettings);
+      } catch {
+        if (cancelled) return;
         setBrandExists(false);
       }
-    }, 3000);
+    })();
+
     return () => {
-      if (timeoutId) clearTimeout(timeoutId);
+      cancelled = true;
     };
   }, []);
 

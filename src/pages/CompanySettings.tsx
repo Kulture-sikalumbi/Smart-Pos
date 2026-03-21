@@ -16,7 +16,7 @@ import { useBranding } from '@/contexts/BrandingContext';
 import { useAuth } from '@/contexts/AuthContext';
 
 export default function CompanySettings() {
-  const { hasPermission, user } = useAuth();
+  const { hasPermission, user, refreshProfile } = useAuth();
   const { settings, updateSettings, reset, saveToServer, brandExists } = useBranding();
   const navigate = useNavigate();
 
@@ -59,6 +59,12 @@ export default function CompanySettings() {
       const ok = await saveToServer(preview, selectedFile, user?.id);
       if (ok) {
         updateSettings(preview);
+        // Ensure the auth profile (and local auth snapshot) picks up the new brand_id immediately.
+        try {
+          await refreshProfile();
+        } catch {
+          // ignore
+        }
         // Show a non-blocking modal instead of browser alert. If brand was just created,
         // prompt the admin to add staff before links are activated.
         if (!wasBrandPresent) {
