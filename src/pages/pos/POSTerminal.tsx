@@ -27,10 +27,11 @@ import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from '@
 import { parseSmartQuantityQuery, smartSearchMenuItems } from '@/lib/smartMenuSearch';
 import { getPosPaymentRequestsSnapshot, resolvePosPaymentRequest, subscribePosPaymentRequests } from '@/lib/posPaymentRequestStore';
 import { ROLE_NAMES } from '@/types/auth';
+import { supabase } from '@/lib/supabaseClient';
 
 export default function POSTerminal() {
   const auth = useAuth();
-  const { user, hasPermission, logout } = auth;
+  const { user, hasPermission, logout, operatorPin } = auth;
   const { settings } = useBranding();
   const navigate = useNavigate();
   const location = useLocation();
@@ -63,9 +64,211 @@ export default function POSTerminal() {
   const [adminBusy, setAdminBusy] = useState(false);
   const [adminError, setAdminError] = useState<string | null>(null);
 
+  const CASHIER_SHIFT_KEY_PREFIX = 'pmx.cashier.shift.active.v1.';
+  const [activeShiftId, setActiveShiftId] = useState<string | null>(null);
+  const [showStartShift, setShowStartShift] = useState(false);
+  const [openingCash, setOpeningCash] = useState('');
+  const [confirmStartShift, setConfirmStartShift] = useState(false);
+  const [shiftBusy, setShiftBusy] = useState(false);
+  const [shiftError, setShiftError] = useState<string | null>(null);
+
+  const [showEndShift, setShowEndShift] = useState(false);
+  const [closingCash, setClosingCash] = useState('');
+  const [confirmEndShift, setConfirmEndShift] = useState(false);
+  // Fallback PIN prompt (only used if we don't have the pin from staff login)
+  const [cashierPin, setCashierPin] = useState('');
+
   const [isOnline, setIsOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
 
   const [selectedOrderItemId, setSelectedOrderItemId] = useState<string | null>(null);
+
+  const isCashier = user?.role === 'cashier';
+
+  const getShiftStorageKey = () => {
+    const staffId = user?.id ? String(user.id) : 'unknown';
+    return `${CASHIER_SHIFT_KEY_PREFIX}${staffId}`;
+  };
+
+  const readStoredShiftId = () => {
+    try {
+      if (!user?.id) return null;
+      return localStorage.getItem(getShiftStorageKey());
+    } catch {
+      return null;
+    }
+  };
+
+  const storeShiftId = (shiftId: string | null) => {
+    try {
+      if (!user?.id) return;
+      const key = getShiftStorageKey();
+      if (!shiftId) localStorage.removeItem(key);
+      else localStorage.setItem(key, shiftId);
+    } catch {
+      // ignore
+    }
+  };
+
+  const parseMoney = (value: string) => {
+    const cleaned = value.replace(/[^0-9.]/g, '');
+    const n = Number(cleaned);
+    if (!Number.isFinite(n)) return null;
+    return Math.max(0, n);
+  };
+
+  const formatMoney = (n: number) => {
+    try {
+      return n.toFixed(2);
+    } catch {
+      return String(n);
+    }
+  };
+
+  const getEffectiveCashierPin = () => (operatorPin ?? cashierPin).trim();
+
+  const startShift = async (amount: number) => {
+    if (!supabase) {
+      setShiftError('Supabase not configured.');
+      return false;
+    }
+    if (!user?.email) {
+      setShiftError('Missing staff email.');
+      return false;
+    }
+    const effectivePin = getEffectiveCashierPin();
+    if (!/^[0-9]{4}$/.test(effectivePin)) {
+      setShiftError('Enter your 4-digit PIN.');
+      return false;
+    }
+
+    setShiftBusy(true);
+    setShiftError(null);
+    try {
+      const { data, error } = await supabase.rpc('cashier_shift_start', {
+        p_email: user.email,
+        p_pin: effectivePin,
+        p_opening_cash: amount,
+      });
+      if (error) {
+        const status = (error as any)?.status;
+        const message = String((error as any)?.message ?? '');
+        const details = String((error as any)?.details ?? '');
+        const hint = String((error as any)?.hint ?? '');
+        const msg = message.toLowerCase();
+
+        if (status === 404 || msg.includes('404') || msg.includes('could not find the function') || msg.includes('function')) {
+          setShiftError('Shift feature is not installed on the server yet. Run Supabase migration 013 (cashier_shift_rpcs) and try again.');
+        } else if (status === 400) {
+          // Surface server-side errors to make debugging deploy/RPC issues straightforward.
+          const extra = [details, hint].filter(Boolean).join(' ');
+          setShiftError(`Unable to start shift: ${message || 'Bad request.'}${extra ? ` ${extra}` : ''}`);
+        } else {
+          setShiftError(message ? `Unable to start shift: ${message}` : 'Unable to start shift. Please try again.');
+        }
+        return false;
+      }
+      const row = Array.isArray(data) ? data[0] : (data as any);
+      const shiftId = row?.shift_id ?? row?.id;
+      if (!shiftId) {
+        // The server returns an empty set when cashier credentials/role are invalid.
+        setShiftError('Unable to start shift. Check your PIN and ensure your role is cashier.');
+        return false;
+      }
+      setActiveShiftId(String(shiftId));
+      storeShiftId(String(shiftId));
+      setShowStartShift(false);
+      setConfirmStartShift(false);
+      setOpeningCash('');
+      setCashierPin('');
+      return true;
+    } catch (e: any) {
+      setShiftError(e?.message ?? 'Unable to start shift');
+      return false;
+    } finally {
+      setShiftBusy(false);
+    }
+  };
+
+  const endShift = async (amount: number) => {
+    if (!supabase) {
+      setShiftError('Supabase not configured.');
+      return false;
+    }
+    if (!user?.email) {
+      setShiftError('Missing staff email.');
+      return false;
+    }
+    const effectivePin = getEffectiveCashierPin();
+    if (!/^[0-9]{4}$/.test(effectivePin)) {
+      setShiftError('Enter your 4-digit PIN.');
+      return false;
+    }
+
+    setShiftBusy(true);
+    setShiftError(null);
+    try {
+      const { data, error } = await supabase.rpc('cashier_shift_end', {
+        p_email: user.email,
+        p_pin: effectivePin,
+        p_closing_cash: amount,
+      });
+      if (error) {
+        const status = (error as any)?.status;
+        const message = String((error as any)?.message ?? '');
+        const details = String((error as any)?.details ?? '');
+        const hint = String((error as any)?.hint ?? '');
+        const msg = message.toLowerCase();
+
+        if (status === 404 || msg.includes('404') || msg.includes('could not find the function') || msg.includes('function')) {
+          setShiftError('Shift feature is not installed on the server yet. Run Supabase migration 013 (cashier_shift_rpcs) and try again.');
+        } else if (status === 400) {
+          const extra = [details, hint].filter(Boolean).join(' ');
+          setShiftError(`Unable to end shift: ${message || 'Bad request.'}${extra ? ` ${extra}` : ''}`);
+        } else {
+          setShiftError(message ? `Unable to end shift: ${message}` : 'Unable to end shift. Please try again.');
+        }
+        return false;
+      }
+      const row = Array.isArray(data) ? data[0] : (data as any);
+      const shiftId = row?.shift_id ?? row?.id;
+      if (!shiftId) {
+        // The server returns an empty set when cashier credentials/role are invalid or no open shift exists.
+        setShiftError('No open shift found to close. Check your PIN and ensure you have an active shift.');
+        return false;
+      }
+
+      setActiveShiftId(null);
+      storeShiftId(null);
+
+      setShowEndShift(false);
+      setConfirmEndShift(false);
+      setClosingCash('');
+      setCashierPin('');
+      return true;
+    } catch (e: any) {
+      setShiftError(e?.message ?? 'Unable to end shift');
+      return false;
+    } finally {
+      setShiftBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    // If cashier: restore active shift (if any) and prompt for start shift when none exists.
+    if (!isCashier || !user?.id) return;
+
+    const stored = readStoredShiftId();
+    if (!stored) {
+      setActiveShiftId(null);
+      setShowStartShift(true);
+      return;
+    }
+
+    // We don't fetch shift details here (keeps shift data brand-guarded).
+    // If the shift was closed elsewhere, the end-shift RPC will reject it.
+    setActiveShiftId(stored);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCashier, user?.id]);
   const [receiptOrder, setReceiptOrder] = useState<Order | null>(null);
   const [showReceipt, setShowReceipt] = useState(false);
 
@@ -718,6 +921,15 @@ export default function POSTerminal() {
                   className="hidden sm:inline-flex"
                   title="Logout"
                   onClick={() => {
+                    if (isCashier && activeShiftId) {
+                      setShiftError(null);
+                      setClosingCash('');
+                      setCashierPin('');
+                      setConfirmEndShift(false);
+                      setShowEndShift(true);
+                      return;
+                    }
+
                     void (async () => {
                       await logout();
                       navigate('/');
@@ -844,6 +1056,213 @@ export default function POSTerminal() {
                       {adminBusy ? 'Unlocking…' : 'Unlock'}
                     </Button>
                   </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            {/* Cashier: Start shift prompt */}
+            <Dialog open={showStartShift} onOpenChange={(open) => {
+              // Starting shift is required for cashier. Keep this modal open until shift starts.
+              if (!open) return;
+              if (shiftBusy) return;
+              setShowStartShift(true);
+            }}>
+              <DialogContent className="max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Start Shift</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-3">
+                  <div className="text-sm text-muted-foreground">
+                    How much cash did you find in the cash register?
+                  </div>
+                  <Input
+                    placeholder="Starting cash (e.g. 200.00)"
+                    inputMode="decimal"
+                    value={openingCash}
+                    onChange={(e) => setOpeningCash(e.target.value)}
+                    disabled={shiftBusy}
+                  />
+                  {!operatorPin ? (
+                    <Input
+                      placeholder="Enter your 4-digit PIN"
+                      inputMode="numeric"
+                      type="password"
+                      value={cashierPin}
+                      onChange={(e) => setCashierPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                      disabled={shiftBusy}
+                    />
+                  ) : null}
+                  {shiftError ? <div className="text-sm text-destructive">{shiftError}</div> : null}
+
+                  {!confirmStartShift ? (
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <Button
+                        type="button"
+                        onClick={() => {
+                          const amount = parseMoney(openingCash);
+                          if (amount === null) {
+                            setShiftError('Enter a valid amount.');
+                            return;
+                          }
+                          setShiftError(null);
+                          setConfirmStartShift(true);
+                        }}
+                        disabled={shiftBusy}
+                      >
+                        Start Shift
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="text-sm">
+                        Confirm: is <span className="font-medium">{formatMoney(parseMoney(openingCash) ?? 0)}</span> the correct starting balance?
+                      </div>
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setConfirmStartShift(false)}
+                          disabled={shiftBusy}
+                        >
+                          Back
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={() => {
+                            const amount = parseMoney(openingCash);
+                            if (amount === null) {
+                              setShiftError('Enter a valid amount.');
+                              setConfirmStartShift(false);
+                              return;
+                            }
+                            void startShift(amount);
+                          }}
+                          disabled={shiftBusy}
+                        >
+                          {shiftBusy ? 'Starting…' : 'Yes, Start'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            {/* Cashier: End shift prompt on logout */}
+            <Dialog open={showEndShift} onOpenChange={(open) => {
+              if (shiftBusy) return;
+              setShowEndShift(open);
+              if (!open) {
+                setConfirmEndShift(false);
+                setShiftError(null);
+              }
+            }}>
+              <DialogContent className="max-w-md">
+                <DialogHeader>
+                  <DialogTitle>End Shift</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-3">
+                  <div className="text-sm text-muted-foreground">
+                    Enter the closing cash balance in the register.
+                  </div>
+                  <Input
+                    placeholder="Closing cash (e.g. 450.00)"
+                    inputMode="decimal"
+                    value={closingCash}
+                    onChange={(e) => setClosingCash(e.target.value)}
+                    disabled={shiftBusy}
+                  />
+                  {!operatorPin ? (
+                    <Input
+                      placeholder="Enter your 4-digit PIN"
+                      inputMode="numeric"
+                      type="password"
+                      value={cashierPin}
+                      onChange={(e) => setCashierPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                      disabled={shiftBusy}
+                    />
+                  ) : null}
+                  {shiftError ? <div className="text-sm text-destructive">{shiftError}</div> : null}
+
+                  {!confirmEndShift ? (
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setShowEndShift(false)}
+                        disabled={shiftBusy}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() => {
+                          // Allow logout without ending shift (in case of mistakes / handover)
+                          void (async () => {
+                            await logout();
+                            navigate('/');
+                          })();
+                        }}
+                        disabled={shiftBusy}
+                      >
+                        Logout Only
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={() => {
+                          const amount = parseMoney(closingCash);
+                          if (amount === null) {
+                            setShiftError('Enter a valid amount.');
+                            return;
+                          }
+                          setShiftError(null);
+                          setConfirmEndShift(true);
+                        }}
+                        disabled={shiftBusy}
+                      >
+                        End Shift
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="text-sm">
+                        Confirm: is <span className="font-medium">{formatMoney(parseMoney(closingCash) ?? 0)}</span> the correct closing balance?
+                      </div>
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setConfirmEndShift(false)}
+                          disabled={shiftBusy}
+                        >
+                          Back
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={() => {
+                            const amount = parseMoney(closingCash);
+                            if (amount === null) {
+                              setShiftError('Enter a valid amount.');
+                              setConfirmEndShift(false);
+                              return;
+                            }
+
+                            void (async () => {
+                              const ok = await endShift(amount);
+                              if (ok) {
+                                await logout();
+                                navigate('/');
+                              }
+                            })();
+                          }}
+                          disabled={shiftBusy}
+                        >
+                          {shiftBusy ? 'Ending…' : 'Yes, End & Logout'}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </DialogContent>
             </Dialog>

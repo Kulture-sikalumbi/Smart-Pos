@@ -102,6 +102,7 @@ interface AuthContextType {
   user: BrandStaffUser | null;
   accountUser: AccountUser | null;
   brand: any | null;
+  operatorPin: string | null;
   loading: boolean;
   profileReady: boolean;
   isAuthenticated: boolean;
@@ -131,6 +132,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [allUsers, setAllUsers] = useState<BrandStaffUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [profileReady, setProfileReady] = useState(false);
+  const [operatorPin, setOperatorPin] = useState<string | null>(null);
 
   // Supabase can emit an initial SIGNED_OUT event during boot (no session).
   // We must not treat that as a real logout, otherwise staff POS sessions restored from
@@ -319,6 +321,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setAccountUser(null);
           setUser(restored.staff);
           setBrand(restored.brand);
+          setOperatorPin(null);
           setLoading(false);
           setProfileReady(true);
           return;
@@ -328,6 +331,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(null);
         setAccountUser(null);
         setBrand(null);
+        setOperatorPin(null);
         setLoading(false);
         setProfileReady(true);
         return;
@@ -344,6 +348,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const acct = snap.user as any;
         setAccountUser(acct);
         setBrand(snap.brand ?? null);
+        setOperatorPin(null);
         // IMPORTANT: also hydrate the active operator immediately so the app doesn't
         // briefly render the public Landing screen before the background refresh completes.
         setUser({
@@ -372,6 +377,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         hadSupabaseSessionRef.current = true;
         setActiveUserId(userId);
         setProfileReady(false);
+        setOperatorPin(null);
 
         const snap = loadAuthSnapshot(userId);
         if (snap?.user) {
@@ -400,6 +406,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(null);
         setAccountUser(null);
         setBrand(null);
+        setOperatorPin(null);
         setLoading(false);
         setProfileReady(true);
         setActiveUserId(null);
@@ -649,6 +656,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setAccountUser(null);
       setUser(staffUser);
       setBrand(brandRow);
+      setOperatorPin(cleanPin);
       setLoading(false);
       setProfileReady(true);
 
@@ -694,6 +702,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAccountUser(null);
     setBrand(null);
     setAllUsers([]);
+    setOperatorPin(null);
     clearStaffSession();
   };
 
@@ -797,6 +806,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       user, 
       accountUser,
       brand, 
+      operatorPin,
       loading, 
       profileReady,
       isAuthenticated: !!user, 
