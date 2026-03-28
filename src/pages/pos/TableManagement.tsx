@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { tableSections, openOrders } from '@/data/posData';
+import { tableSections } from '@/data/posData';
 import { Table as TableType, TableStatus } from '@/types/pos';
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
@@ -38,7 +38,8 @@ export default function TableManagement() {
   const [payRequestedOnly, setPayRequestedOnly] = useState(false);
 
   const persistedOrders = useSyncExternalStore(subscribeOrders, getOrdersSnapshot);
-  const orders = useMemo(() => (persistedOrders.length ? persistedOrders : openOrders), [persistedOrders]);
+  // Use persisted orders only (disable demo fallback)
+  const orders = useMemo(() => persistedOrders, [persistedOrders]);
 
   const paymentRequests = useSyncExternalStore(subscribePosPaymentRequests, getPosPaymentRequestsSnapshot);
   const paymentRequestedTableNos = useMemo(() => new Set(paymentRequests.map((r) => r.tableNo)), [paymentRequests]);

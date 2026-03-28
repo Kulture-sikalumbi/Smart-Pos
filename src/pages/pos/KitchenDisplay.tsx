@@ -12,8 +12,10 @@ import { cn } from '@/lib/utils';
 import {
   getOrdersSnapshot,
   markOrderItemPrepared,
+  markOrderStarted,
   markOrderReady,
   markOrderServed,
+  notifyOrderReady,
   subscribeOrders,
 } from '@/lib/orderStore';
 import {
@@ -21,12 +23,15 @@ import {
   ensureKitchenItemsFromOrders,
   getKitchenSnapshot,
   upsertKitchenItemStatus,
+  subscribeKitchen,
   type KitchenItemStatus,
 } from '@/lib/kitchenStore';
 import useKitchenRealtime from '@/hooks/useKitchenRealtime';
 import { fetchAndReplaceOrdersFromSupabase } from '@/lib/orderStore';
 import { useAuth } from '@/contexts/AuthContext';
 import { ROLE_NAMES } from '@/types/auth';
+import type { OrderItem } from '@/types/pos';
+// debug viewer removed
 
 export default function KitchenDisplay() {
   const { user } = useAuth();
@@ -43,10 +48,9 @@ export default function KitchenDisplay() {
 
   // Local state for kitchen items to force re-renders
   const [localKitchenItems, setLocalKitchenItems] = useState(() => getKitchenSnapshot().items);
+  // debug viewer removed
 
-  console.log('KitchenDisplay render - orders.length:', orders.length);
-  console.log('Orders:', orders.map(o => ({ id: o.id, status: o.status, items: o.items.filter(i => i.sentToKitchen).length })));
-  console.log('Local kitchen items:', localKitchenItems);
+  // render summary
 
   const [now, setNow] = useState(() => Date.now());
   const [query, setQuery] = useState('');
@@ -125,25 +129,46 @@ export default function KitchenDisplay() {
     ensureKitchenItemsFromOrders(orders);
   }, [orders]);
 
+  useEffect(() => {
+    // Keep localKitchenItems in sync with persisted kitchen store so UI reflects
+    // updates made elsewhere (e.g., ensureKitchenItemsFromOrders or other tabs).
+    const unsub = subscribeKitchen(() => {
+      try {
+        setLocalKitchenItems(getKitchenSnapshot().items);
+      } catch {
+        // ignore
+      }
+    });
+    return () => unsub();
+  }, []);
+
   const kitchenKey = useMemo(() => {
     const m = new Map<string, KitchenItemStatus>();
     for (const it of localKitchenItems) m.set(`${it.orderId}:${it.itemId}`, it.status);
-    console.log('kitchenKey updated, size:', m.size, 'entries:', Array.from(m.entries()));
+    // kitchenKey updated
     return m;
   }, [localKitchenItems]);
 
   function getItemStatus(order: (typeof orders)[number], item: (typeof orders)[number]['items'][number]): KitchenItemStatus {
-    // Prefer DB-backed `kitchenStatus` or `preparedAt`, then fall back to local kitchen store
+    // Prefer local kitchen store first (so UI actions like "Done" are immediate),
+    // then fall back to preparedAt and DB-backed `kitchenStatus`.
+    const localKey = kitchenKey.get(`${order.id}:${item.id}`);
+    if (localKey) {
+      if (localKey === 'ready' || localKey === 'served') return 'ready';
+      if (localKey === 'preparing' || localKey === 'in_progress') return 'preparing';
+      return 'pending';
+    }
+
+    if (item.preparedAt) return 'ready';
+
     const ks = (item as any).kitchenStatus ?? undefined;
     if (ks) {
       if (ks === 'ready' || ks === 'served') return 'ready';
       if (ks === 'preparing' || ks === 'in_progress') return 'preparing';
       return 'pending';
     }
-    if (item.preparedAt) return 'ready';
-    const kitchenStatus = kitchenKey.get(`${order.id}:${item.id}`) ?? 'pending';
-    console.log('getItemStatus for', order.id, item.id, ':', kitchenStatus, 'preparedAt:', item.preparedAt);
-    return kitchenStatus;
+
+    return 'pending';
   }
 
   function getElapsedMinutes(order: (typeof orders)[number]) {
@@ -153,12 +178,12 @@ export default function KitchenDisplay() {
   }
 
   function setItem(orderId: string, itemId: string, status: KitchenItemStatus, preparedAt?: string) {
-    console.log('setItem called:', orderId, itemId, status);
+    // setItem called
     upsertKitchenItemStatus({ orderId, itemId, status });
-    // Persist "ready" state into the real order so it survives device changes.
-    if (status === 'ready') markOrderItemPrepared({ orderId, itemId, prepared: true });
-    // If we revert from ready, we remove preparedAt.
-    if (status !== 'ready' && preparedAt) markOrderItemPrepared({ orderId, itemId, prepared: false });
+    // NOTE: do NOT persist per-item prepared state here. We keep it local in the
+    // kitchen store so clicking "Done" keeps the ticket in Ready To Pass without
+    // notifying the POS. The explicit "Pass" button will call `markOrderReady`
+    // to persist the order and notify the POS.
     
     // Update local state to force re-render
     setLocalKitchenItems(prev => {
@@ -189,8 +214,9 @@ export default function KitchenDisplay() {
   const activeOrders = useMemo(() => {
     const q = query.trim().toLowerCase();
     const result = orders
-      .filter((o) => ['sent', 'ready', 'paid', 'open'].includes(o.status))
-      .filter((o) => o.items.some((i) => i.sentToKitchen === true && (i.kitchenStatus ?? null) !== 'served' && !i.isVoided))
+      .filter((o) => ['sent', 'in_progress', 'ready', 'paid', 'open'].includes(o.status))
+      // include any order that has kitchen items (even if they're all ready)
+      .filter((o) => o.items.some((i) => i.sentToKitchen === true && !i.isVoided))
       .filter((o) => {
         if (!q) return true;
         const hay = `${o.orderNo} ${o.tableNo ?? ''} ${o.staffName} ${o.orderType}`.toLowerCase();
@@ -198,7 +224,6 @@ export default function KitchenDisplay() {
       })
       .sort((a, b) => new Date(a.sentAt ?? a.createdAt).getTime() - new Date(b.sentAt ?? b.createdAt).getTime());
     
-    console.log('activeOrders:', result.length, result.map(o => ({ id: o.id, status: o.status, items: o.items.length })));
     return result;
   }, [orders, query]);
 
@@ -262,30 +287,30 @@ export default function KitchenDisplay() {
       const status = getItemStatus(order, it);
       return status === 'preparing' || status === 'ready';
     });
-    console.log('isOrderStarted for order', order.id, ':', result, 'kitchenItems:', kitchenItems.length);
+    // isOrderStarted for order
     return result;
   }
 
   const pendingTickets = useMemo(
     () => {
       const result = activeOrders.filter((o) => o.status === 'sent' && !isOrderStarted(o));
-      console.log('pendingTickets:', result.length, result.map(o => o.id));
+      // pendingTickets computed
       return result;
     },
     [activeOrders, localKitchenItems]
   );
   const inProgressTickets = useMemo(
     () => {
-      const result = activeOrders.filter((o) => o.status === 'sent' && isOrderStarted(o) && !isTicketComplete(o));
-      console.log('inProgressTickets:', result.length, result.map(o => o.id));
+      const result = activeOrders.filter((o) => (o.status === 'in_progress' || (o.status === 'sent' && isOrderStarted(o))) && !isTicketComplete(o));
+      // inProgressTickets computed
       return result;
     },
     [activeOrders, localKitchenItems]
   );
   const readyTickets = useMemo(
     () => {
-      const result = activeOrders.filter((o) => o.status === 'ready' || (o.status === 'sent' && isTicketComplete(o)));
-      console.log('readyTickets:', result.length, result.map(o => o.id));
+      const result = activeOrders.filter((o) => o.status === 'ready' || ((o.status === 'sent' || o.status === 'in_progress') && isTicketComplete(o)));
+      // readyTickets computed
       return result;
     },
     [activeOrders, localKitchenItems]
@@ -306,8 +331,17 @@ export default function KitchenDisplay() {
     const complete = isTicketComplete(order);
     const kitchenItems = order.items.filter((i) => i.sentToKitchen && !i.isVoided);
 
-    // Group kitchenItems by menuItemId and sum quantities
-    const groupedKitchenItems = Object.values(kitchenItems.reduce((acc, it) => {
+    // Debug: show raw kitchen items so we can detect upstream duplication
+    // TicketCard raw kitchenItems for order
+
+    // De-duplicate by item `id` (defensive: if duplicates are already present upstream)
+    const uniqueKitchenItems = kitchenItems.filter((it, idx, arr) => arr.findIndex(x => x.id === it.id) === idx);
+    if (uniqueKitchenItems.length !== kitchenItems.length) {
+      console.warn('Duplicate kitchen items detected and deduped for order', order.id);
+    }
+
+    // Group uniqueKitchenItems by menuItemId and sum quantities
+    const groupedKitchenItems: OrderItem[] = Object.values(uniqueKitchenItems.reduce((acc: Record<string, OrderItem>, it) => {
       if (!acc[it.menuItemId]) {
         acc[it.menuItemId] = { ...it };
       } else {
@@ -319,6 +353,8 @@ export default function KitchenDisplay() {
       }
       return acc;
     }, {}));
+
+    // TicketCard groupedKitchenItems for order
 
     return (
       <motion.div layout {...motionProps} transition={{ duration: 0.18 }}>
@@ -402,52 +438,51 @@ export default function KitchenDisplay() {
 
             {/* Order Lifecycle Buttons */}
             <div className="mt-4 flex gap-2">
-              {!isOrderStarted(order) ? (
-                // Order not started - show Start All Pending
+              {order.status === 'sent' && !isOrderStarted(order) ? (
+                // Pending: Start Order
                 <Button
                   className="flex-1 gap-2"
                   onClick={() => {
-                    console.log('Start Order clicked for order:', order.id);
-                    // Start all pending items
+                    markOrderStarted(order.id);
                     kitchenItems
                       .filter((it) => getItemStatus(order, it) === 'pending')
-                      .forEach((it) => {
-                        console.log('Starting item:', it.id);
-                        setItem(order.id, it.id, 'preparing', it.preparedAt);
-                      });
+                      .forEach((it) => setItem(order.id, it.id, 'preparing', it.preparedAt));
                   }}
                 >
                   <Play className="h-4 w-4" /> Start Order
                 </Button>
-              ) : !complete ? (
-                // Order started but not complete - show Done button
+              ) : complete && order.status !== 'ready' ? (
+                // Complete on kitchen: Pass -> mark order as ready (notify POS)
                 <Button
                   className="flex-1 gap-2"
                   onClick={() => {
-                    console.log('Order Done clicked for order:', order.id);
-                    // Mark all items as ready
+                    // Ensure items are marked ready locally
                     kitchenItems
                       .filter((it) => getItemStatus(order, it) !== 'ready')
-                      .forEach((it) => {
-                        console.log('Marking item as ready:', it.id);
-                        setItem(order.id, it.id, 'ready', it.preparedAt);
-                      });
+                      .forEach((it) => setItem(order.id, it.id, 'ready', it.preparedAt));
+                    // Explicit pass: persist order ready and notify remote
+                    markOrderReady(order.id);
+                    // Explicit DB-backed brand-scoped notification — only send
+                    // when the kitchen operator clicks Pass.
+                    void notifyOrderReady(order.id);
                   }}
                 >
-                  <Check className="h-4 w-4" /> Order Done
+                  <Check className="h-4 w-4" /> Pass
                 </Button>
-              ) : order.status !== 'ready' ? (
-                // Order complete - show Mark Ticket Ready
+              ) : order.status === 'in_progress' || (order.status === 'sent' && isOrderStarted(order)) ? (
+                // In Progress: Done -> mark all items ready locally (don't notify POS yet)
                 <Button
                   className="flex-1 gap-2"
                   onClick={() => {
-                    markOrderReady(order.id);
+                    kitchenItems
+                      .filter((it) => getItemStatus(order, it) !== 'ready')
+                      .forEach((it) => setItem(order.id, it.id, 'ready', it.preparedAt));
                   }}
                 >
-                  <CheckCircle2 className="h-4 w-4" /> Mark Ticket Ready
+                  <Check className="h-4 w-4" /> Done
                 </Button>
-              ) : (
-                // Order ready - show Clear (Served)
+              ) : order.status === 'ready' ? (
+                // Ready To Pass: Serve
                 <Button
                   className="flex-1 gap-2"
                   variant="default"
@@ -456,7 +491,12 @@ export default function KitchenDisplay() {
                     clearKitchenForOrder(order.id);
                   }}
                 >
-                  <Check className="h-4 w-4" /> Clear (Served)
+                  <Check className="h-4 w-4" /> Serve
+                </Button>
+              ) : (
+                // Fallback for unexpected states
+                <Button className="flex-1 gap-2" onClick={() => { markOrderStarted(order.id); }}>
+                  <Play className="h-4 w-4" /> Start Order
                 </Button>
               )}
             </div>
@@ -468,6 +508,7 @@ export default function KitchenDisplay() {
   
   return (
     <div className="p-4">
+      {/* Debug panel removed */}
       <PageHeader
         title="Kitchen Display"
         description="Live kitchen screen (orders from POS)"
@@ -561,10 +602,7 @@ export default function KitchenDisplay() {
                   <ScrollArea className="h-[70vh] pr-2">
                     <div className="space-y-3">
                       <AnimatePresence initial={false}>
-                        {activeOrders
-                          .filter((o) => o.status === 'sent')
-                          .filter((o) => o.items.some((it) => getItemStatus(o.id, it.id, it.preparedAt) === 'preparing'))
-                          .map((order) => (
+                          {inProgressTickets.map((order) => (
                             <TicketCard key={order.id} order={order} />
                           ))}
                       </AnimatePresence>

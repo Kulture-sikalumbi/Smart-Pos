@@ -65,6 +65,7 @@ const MenuManager: React.FC = () => {
   const [stockSuggestionsOpen, setStockSuggestionsOpen] = useState(false);
   const [confirmRetailModalOpen, setConfirmRetailModalOpen] = useState(false);
   const [pendingStockSelection, setPendingStockSelection] = useState<any>(null);
+  const errs = useMemo(() => {
     const errs: string[] = [];
     const name = String(form.name ?? '').trim();
     const price = Number(form.price ?? 0);
