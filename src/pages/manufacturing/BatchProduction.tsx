@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { Plus, Factory, AlertTriangle, Trash2 } from 'lucide-react';
+import { Plus, Factory, AlertTriangle, Trash2, ChevronsUpDown, Check, Loader2 } from 'lucide-react';
 import { PageHeader, DataTableWrapper, NumericCell, StatusBadge } from '@/components/common/PageComponents';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -7,12 +7,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from '@/components/ui/command';
+import { cn } from '@/lib/utils';
 import { toast } from '@/hooks/use-toast';
 import type { Recipe } from '@/types';
 import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes } from '@/lib/manufacturingRecipeStore';
 import { getStockItemsSnapshot, subscribeStockItems } from '@/lib/stockStore';
-import { deleteBatchProduction, getBatchProductionsSnapshot, recordBatchProduction, subscribeBatchProductions, BatchInsufficientStockError } from '@/lib/batchProductionStore';
+import { deleteBatchProduction, ensureBatchProductionsLoaded, getBatchProductionsSnapshot, recordBatchProduction, subscribeBatchProductions, BatchInsufficientStockError } from '@/lib/batchProductionStore';
 
 export default function BatchProduction() {
   const recipes = useSyncExternalStore(subscribeManufacturingRecipes, getManufacturingRecipesSnapshot);
@@ -22,9 +24,13 @@ export default function BatchProduction() {
   const [recordOpen, setRecordOpen] = useState(false);
   const [recipeId, setRecipeId] = useState<string>(() => recipes[0]?.id ?? '');
   const [batchDate, setBatchDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [isLoading, setIsLoading] = useState(true);
+  const [deletingBatchId, setDeletingBatchId] = useState<string | null>(null);
   const [theoreticalOutput, setTheoreticalOutput] = useState<number>(0);
   const [actualOutput, setActualOutput] = useState<number>(0);
   const [producedBy, setProducedBy] = useState('Kitchen Staff');
+  const [recipeSearchOpen, setRecipeSearchOpen] = useState(false);
+  const [recipeSearchTerm, setRecipeSearchTerm] = useState('');
 
   const selectedRecipe = useMemo(() => recipes.find(r => r.id === recipeId) ?? recipes[0] ?? null, [recipes, recipeId]);
 
@@ -36,6 +42,25 @@ export default function BatchProduction() {
     setActualOutput(r.outputQty);
   }, [recordOpen, recipeId, recipes]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadBatches = async () => {
+      setIsLoading(true);
+      try {
+        await ensureBatchProductionsLoaded();
+      } catch (err) {
+        console.warn('Failed to ensure batch data loaded', err);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    };
+    void loadBatches();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const openRecord = () => {
     const r = recipes[0] ?? null;
     setRecipeId(r?.id ?? '');
@@ -46,7 +71,7 @@ export default function BatchProduction() {
     setRecordOpen(true);
   };
 
-  const submit = () => {
+  const submit = async () => {
     if (!selectedRecipe) {
       toast({ title: 'No recipe', description: 'Create a recipe first.' });
       return;
@@ -58,7 +83,7 @@ export default function BatchProduction() {
     const theo = theoreticalOutput > 0 ? theoreticalOutput : actualOutput;
 
     try {
-      recordBatchProduction({
+      await recordBatchProduction({
         recipeId: selectedRecipe.id,
         batchDate,
         theoreticalOutput: theo,
@@ -89,9 +114,15 @@ export default function BatchProduction() {
         actions={<Button onClick={openRecord}><Plus className="h-4 w-4 mr-2" />Record Batch</Button>}
       />
 
-      <div className="space-y-4">
-        {batches.map((batch) => (
-          <Card key={batch.id}>
+      {isLoading ? (
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+          <span>Loading batch records…</span>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {batches.map((batch) => (
+            <Card key={batch.id}>
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
@@ -105,8 +136,24 @@ export default function BatchProduction() {
                   <p className="font-bold">K {batch.totalCost.toFixed(2)}</p>
                   <p className="text-xs text-muted-foreground">Unit: K {batch.unitCost.toFixed(2)}</p>
                   <div className="mt-2 flex justify-end">
-                    <Button variant="ghost" size="icon" onClick={() => deleteBatchProduction(batch.id)}>
-                      <Trash2 className="h-4 w-4" />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      disabled={deletingBatchId === batch.id}
+                      onClick={async () => {
+                        setDeletingBatchId(batch.id);
+                        try {
+                          await deleteBatchProduction(batch.id);
+                          toast({ title: 'Batch deleted', description: `Batch ${batch.recipeName} removed successfully.` });
+                        } catch (err) {
+                          console.error('Delete batch failed', err);
+                          toast({ title: 'Delete failed', description: (err as Error)?.message ?? 'Could not delete batch.', variant: 'destructive' });
+                        } finally {
+                          setDeletingBatchId(null);
+                        }
+                      }}
+                    >
+                      {deletingBatchId === batch.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                     </Button>
                   </div>
                 </div>
@@ -158,6 +205,7 @@ export default function BatchProduction() {
           </Card>
         ))}
       </div>
+      )}
 
       <RecordBatchDialog
         open={recordOpen}
@@ -174,6 +222,8 @@ export default function BatchProduction() {
         setActualOutput={setActualOutput}
         producedBy={producedBy}
         setProducedBy={setProducedBy}
+        recipeSearchOpen={recipeSearchOpen}
+        setRecipeSearchOpen={setRecipeSearchOpen}
         onSubmit={submit}
       />
     </div>
@@ -195,6 +245,8 @@ function RecordBatchDialog(props: {
   setActualOutput: (n: number) => void;
   producedBy: string;
   setProducedBy: (v: string) => void;
+  recipeSearchOpen: boolean;
+  setRecipeSearchOpen: (open: boolean) => void;
   onSubmit: () => void;
 }) {
   const r = props.recipes.find(x => x.id === props.recipeId) ?? null;
@@ -229,14 +281,38 @@ function RecordBatchDialog(props: {
         <div className="space-y-3">
           <div className="space-y-1">
             <Label>Recipe</Label>
-            <Select value={props.recipeId} onValueChange={props.setRecipeId}>
-              <SelectTrigger><SelectValue placeholder="Select recipe" /></SelectTrigger>
-              <SelectContent>
-                {props.recipes.map(rec => (
-                  <SelectItem key={rec.id} value={rec.id}>{rec.parentItemName} ({rec.parentItemCode})</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <Popover open={props.recipeSearchOpen} onOpenChange={props.setRecipeSearchOpen}>
+              <PopoverTrigger asChild>
+                <Button variant="outline" role="combobox" className="w-full justify-between">
+                  {r ? `${r.parentItemName} (${r.parentItemCode})` : 'Select recipe...'}
+                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-full p-0">
+                <Command>
+                  <CommandInput placeholder="Search recipes..." />
+                  <CommandEmpty>No recipe found.</CommandEmpty>
+                  <CommandGroup>
+                    {props.recipes.map(rec => (
+                      <CommandItem
+                        key={rec.id}
+                        value={rec.id}
+                        onSelect={(currentValue) => {
+                          props.setRecipeId(currentValue);
+                          props.setRecipeSearchOpen(false);
+                        }}
+                      >
+                        <Check className={cn('mr-2 h-4 w-4', props.recipeId === rec.id ? 'opacity-100' : 'opacity-0')} />
+                        <div className="flex-1">
+                          <div className="font-medium">{rec.parentItemName}</div>
+                          <div className="text-xs text-muted-foreground">{rec.parentItemCode}</div>
+                        </div>
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </Command>
+              </PopoverContent>
+            </Popover>
             {r ? <div className="text-xs text-muted-foreground">Output per recipe: {r.outputQty} {r.outputUnitType} • Unit cost: K {r.unitCost.toFixed(2)}</div> : null}
           </div>
 

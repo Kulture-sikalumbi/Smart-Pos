@@ -50,7 +50,7 @@ const POSTerminal = React.lazy(() => import("./pages/pos/POSTerminal"));
 const TableManagement = React.lazy(() => import("./pages/pos/TableManagement"));
 const CashUp = React.lazy(() => import("./pages/pos/CashUp"));
 const KitchenDisplay = React.lazy(() => import("./pages/pos/KitchenDisplay"));
-const MenuManager = React.lazy(() => import("./pages/pos/MenuManager").then(module => ({ default: module.MenuManager })));
+const MenuManager = React.lazy(() => import("./pages/pos/MenuManager"));
 
 // Professional Skeleton Spinner
 function AppShellLoader() {

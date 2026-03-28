@@ -514,12 +514,27 @@ function syncFinishedGoodCostToPosByCode(code: string, unitCost: number) {
   }
 }
 
-export function applyBatchProductionToStock(params: {
+function isValidUUID(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  const s4 = () => Math.floor((1 + Math.random()) * 0x10000).toString(16).substring(1);
+  return `${s4()}${s4()}-${s4()}-${s4()}-${s4()}-${s4()}${s4()}${s4()}`;
+}
+
+export async function applyBatchProductionToStock(params: {
   recipe: Recipe;
   batch: BatchProduction;
 }):
-  | { ok: true }
-  | { ok: false; insufficient: Array<{ itemId: string; requiredQty: number; onHandQty: number }> } {
+  Promise<
+    | { ok: true }
+    | { ok: false; insufficient: Array<{ itemId: string; requiredQty: number; onHandQty: number }> }
+  > {
   const { recipe, batch } = params;
   const existing = load();
   const byId = new Map(existing.map(s => [s.id, s] as const));
@@ -546,10 +561,17 @@ export function applyBatchProductionToStock(params: {
   }
 
   // Ensure finished good exists as a stock item (so batches can increase it)
-  const finishedId = `fg-${recipe.parentItemCode}`;
-  const existingFinished = byId.get(finishedId);
+  const finishedCode = String(recipe.parentItemCode);
+  const fallbackFinishedId = `fg-${finishedCode}`;
+  const existingFinishedById = byId.get(fallbackFinishedId);
+  const existingFinishedByCode = Array.from(byId.values()).find(
+    (s) => String(s.code) === finishedCode || String((s as any).item_code) === finishedCode
+  );
+  const existingFinished = existingFinishedById ?? existingFinishedByCode;
+  const finalFinishedId = existingFinished?.id ?? fallbackFinishedId;
   const producedQty = Number.isFinite(batch.actualOutput) ? batch.actualOutput : 0;
 
+  let finishedGood: StockItem | null = null;
   if (producedQty > 0) {
     const oldQty = existingFinished ? (Number.isFinite(existingFinished.currentStock) ? existingFinished.currentStock : 0) : 0;
     const oldCost = existingFinished ? (Number.isFinite(existingFinished.currentCost) ? existingFinished.currentCost : 0) : 0;
@@ -558,8 +580,8 @@ export function applyBatchProductionToStock(params: {
     const newCost = newQty > 0 ? (oldQty * oldCost + producedQty * unitCostIn) / newQty : unitCostIn;
 
     const base: StockItem = existingFinished ?? {
-      id: finishedId,
-      code: String(recipe.parentItemCode),
+      id: finalFinishedId,
+      code: finishedCode,
       name: String(recipe.parentItemName),
       departmentId: recipe.finishedGoodDepartmentId ?? 'bakery',
       unitType: recipe.outputUnitType,
@@ -572,13 +594,18 @@ export function applyBatchProductionToStock(params: {
     const lowest = Number.isFinite(base.lowestCost) ? base.lowestCost : unitCostIn;
     const highest = Number.isFinite(base.highestCost) ? base.highestCost : unitCostIn;
 
-    byId.set(finishedId, {
+    finishedGood = {
       ...base,
       currentStock: newQty,
       currentCost: round2(newCost),
       lowestCost: round2(Math.min(lowest, unitCostIn)),
       highestCost: round2(Math.max(highest, unitCostIn)),
-    });
+    };
+
+    if (fallbackFinishedId !== finalFinishedId) {
+      byId.delete(fallbackFinishedId);
+    }
+    byId.set(finalFinishedId, finishedGood);
   }
 
   const next = Array.from(byId.values());
@@ -586,32 +613,73 @@ export function applyBatchProductionToStock(params: {
   persist(next);
   emit();
 
+  // Persist finished good to Supabase if configured
+  if (finishedGood && isSupabaseConfigured() && supabase) {
+    try {
+      const finishedCode = String(recipe.parentItemCode);
+      const dbExisting = existing.find((s) => String(s.code) === finishedCode || String((s as any).item_code) === finishedCode);
+      const dbId = dbExisting && isValidUUID(dbExisting.id) ? dbExisting.id : generateUUID();
+
+      // Normalize payload to DB shape (uuid id and stable code)
+      const dbItem: StockItem = {
+        ...finishedGood,
+        id: dbId,
+        code: finishedCode,
+        name: String(recipe.parentItemName),
+        unitType: recipe.outputUnitType,
+      };
+
+      if (dbExisting && isValidUUID(dbExisting.id)) {
+        await updateStockItem(dbId, {
+          currentStock: dbItem.currentStock,
+          currentCost: dbItem.currentCost,
+          lowestCost: dbItem.lowestCost,
+          highestCost: dbItem.highestCost,
+        });
+      } else {
+        // Ensure we don't send non-uuid IDs to Supabase
+        await addStockItem(dbItem);
+      }
+    } catch (err) {
+      console.warn('Failed to persist finished good to Supabase:', err);
+      // Continue anyway - local state is updated
+    }
+  }
+
   syncFinishedGoodCostToPosByCode(String(recipe.parentItemCode), batch.unitCost);
   return { ok: true };
 }
 
-export function revertBatchProductionFromStock(params: {
+export async function revertBatchProductionFromStock(params: {
   recipe: Recipe;
   batch: BatchProduction;
 }):
-  | { ok: true }
-  | { ok: false; insufficientFinishedGoods: Array<{ itemId: string; requiredQty: number; onHandQty: number }> } {
+  Promise<
+    | { ok: true }
+    | { ok: false; insufficientFinishedGoods: Array<{ itemId: string; requiredQty: number; onHandQty: number }> }
+  > {
   const { recipe, batch } = params;
   const existing = load();
   const byId = new Map(existing.map((s) => [s.id, s] as const));
 
-  const finishedId = `fg-${recipe.parentItemCode}`;
+  const finishedCode = String(recipe.parentItemCode);
+  const fallbackFinishedId = `fg-${finishedCode}`;
+  const finishedById = byId.get(fallbackFinishedId);
+  const finishedByCode = Array.from(byId.values()).find(
+    (s) => String(s.code) === finishedCode || String((s as any).item_code) === finishedCode
+  );
+  const finishedItem = finishedById ?? finishedByCode;
   const producedQty = Number.isFinite(batch.actualOutput) ? batch.actualOutput : 0;
 
   const insufficientFinishedGoods: Array<{ itemId: string; requiredQty: number; onHandQty: number }> = [];
-  if (producedQty > 0) {
-    const fg = byId.get(finishedId);
-    const onHand = fg && Number.isFinite(fg.currentStock) ? fg.currentStock : 0;
+  if (producedQty > 0 && finishedItem) {
+    const onHand = Number.isFinite(finishedItem.currentStock) ? finishedItem.currentStock : 0;
     if (producedQty > onHand + 1e-9) {
-      insufficientFinishedGoods.push({ itemId: finishedId, requiredQty: producedQty, onHandQty: onHand });
+      const id = finishedItem.id;
+      insufficientFinishedGoods.push({ itemId: id, requiredQty: producedQty, onHandQty: onHand });
+      // allow goal: in some scenarios stock may lag due remote sync; still allow revert but clamp to zero.
     }
   }
-  if (insufficientFinishedGoods.length) return { ok: false, insufficientFinishedGoods };
 
   // Add ingredients back
   for (const ing of batch.ingredientsUsed) {
@@ -623,18 +691,45 @@ export function revertBatchProductionFromStock(params: {
   }
 
   // Reduce finished goods
-  if (producedQty > 0) {
-    const fg = byId.get(finishedId);
-    if (fg) {
-      const oldQty = Number.isFinite(fg.currentStock) ? fg.currentStock : 0;
-      byId.set(finishedId, { ...fg, currentStock: round2(oldQty - producedQty) });
+  let updatedFinishedGood: StockItem | null = null;
+  if (producedQty > 0 && finishedItem) {
+    const finishedStockId = finishedItem.id ?? fallbackFinishedId;
+    const oldQty = Number.isFinite(finishedItem.currentStock) ? finishedItem.currentStock : 0;
+    const newQty = Math.max(0, round2(oldQty - producedQty));
+    updatedFinishedGood = { ...finishedItem, currentStock: newQty };
+
+    if (finishedStockId !== fallbackFinishedId) {
+      byId.delete(fallbackFinishedId);
     }
+    byId.set(finishedStockId, updatedFinishedGood);
   }
 
   const next = Array.from(byId.values());
   state = next;
   persist(next);
   emit();
+
+  // Persist updated finished good to Supabase if configured
+  if (updatedFinishedGood && isSupabaseConfigured() && supabase) {
+    try {
+      const finishedCode = String(recipe.parentItemCode);
+      const dbExisting = existing.find((s) => String(s.code) === finishedCode || String((s as any).item_code) === finishedCode);
+      if (dbExisting && isValidUUID(dbExisting.id)) {
+        await updateStockItem(dbExisting.id, {
+          currentStock: updatedFinishedGood.currentStock,
+        });
+      } else {
+        // No existing DB row to reduce; attempt to find by name or ID and update too.
+        const alt = existing.find((s) => String(s.name) === String(recipe.parentItemName) || s.id === updatedFinishedGood.id);
+        if (alt && isValidUUID(alt.id)) {
+          await updateStockItem(alt.id, { currentStock: updatedFinishedGood.currentStock });
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to persist finished good revert to Supabase:', err);
+      // Continue anyway - local state is updated
+    }
+  }
 
   return { ok: true };
 }

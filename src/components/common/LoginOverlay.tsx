@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { UserCog, UserCircle2 } from 'lucide-react';
 
 interface LoginOverlayProps {
   onClose?: () => void;
@@ -29,18 +30,6 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
       return (await Promise.race([p, timeout])) as T;
     } finally {
       clearTimeout(timer);
-    }
-  };
-
-  const googleSignIn = async () => {
-    setError(null);
-    setBusy(true);
-    try {
-      await withTimeout(auth.signInWithGoogle(), 20000);
-    } catch (err: any) {
-      setError(err?.message || 'Google sign in failed');
-    } finally {
-      setBusy(false);
     }
   };
 
@@ -142,8 +131,8 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
 
   return (
     <div className="fixed inset-0 flex items-center justify-center z-50">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative w-full max-w-md bg-white text-black rounded-lg shadow-lg p-6">
+      <div className="absolute inset-0 bg-slate-900/70" onClick={onClose} />
+      <div className="relative w-full max-w-md bg-white text-black rounded-2xl shadow-2xl p-6 border border-slate-200">
         {onClose && (
           <button
             className="absolute top-4 right-4 text-gray-500 hover:text-gray-800"
@@ -153,7 +142,22 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
           </button>
         )}
         <form onSubmit={submitLogin} className="space-y-4">
-            <div className="grid grid-cols-2 gap-2">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Smart POS Login</h2>
+                <p className="text-xs text-slate-500">
+                  {mode === 'admin'
+                    ? 'Sign in as an owner or manager to access the back office.'
+                    : 'Staff use email and PIN to jump straight into the till.'}
+                </p>
+              </div>
+              <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-[11px] font-medium text-slate-700">
+                {mode === 'admin' ? <UserCog className="h-3.5 w-3.5" /> : <UserCircle2 className="h-3.5 w-3.5" />}
+                {mode === 'admin' ? 'Admin mode' : 'Staff mode'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-sm">
               <button
                 type="button"
                 onClick={() => {
@@ -161,8 +165,13 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
                   setError(null);
                 }}
                 disabled={busy}
-                className={`px-3 py-2 rounded border text-sm font-medium ${mode === 'admin' ? 'bg-gray-100' : 'bg-white hover:bg-gray-50'}`}
+                className={`flex items-center justify-center gap-2 rounded-md border px-3 py-2 font-medium transition-colors ${
+                  mode === 'admin'
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                    : 'bg-white text-slate-700 hover:bg-slate-50'
+                }`}
               >
+                <UserCog className="h-4 w-4" />
                 Admin Login
               </button>
               <button
@@ -176,36 +185,24 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
                   setError(null);
                 }}
                 disabled={busy}
-                className={`px-3 py-2 rounded border text-sm font-medium ${mode === 'staff' ? 'bg-gray-100' : 'bg-white hover:bg-gray-50'}`}
+                className={`flex items-center justify-center gap-2 rounded-md border px-3 py-2 font-medium transition-colors ${
+                  mode === 'staff'
+                    ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm'
+                    : 'bg-white text-slate-700 hover:bg-slate-50'
+                }`}
               >
+                <UserCircle2 className="h-4 w-4" />
                 Staff POS Login
               </button>
             </div>
 
             {mode === 'staff' && (
-              <div className="rounded-md border bg-gray-50 px-3 py-2 text-sm text-gray-700">
+              <div className="rounded-lg border bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
                 Use the staff email and 4-digit PIN set by your admin. If your details don’t match, ask the admin to add you to their brand.
               </div>
             )}
-
-            {mode === 'admin' && (
-            <button
-              type="button"
-              onClick={googleSignIn}
-              disabled={busy}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2 border rounded hover:bg-gray-100"
-            >
-              <svg className="w-5 h-5" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M43.6 20.4H42V20H24v8h11.3C33.6 32.1 29.2 35 24 35c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.8 3.1l5.5-5.5C34.9 6.1 29.8 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20c11 0 20-8.9 20-20 0-1.3-.1-2.6-.4-3.6z" fill="#EA4335"/>
-                <path d="M6.3 14.7l6.6 4.8C14.6 16.1 18.9 13 24 13c3.1 0 5.8 1.2 7.8 3.1l5.5-5.5C34.9 6.1 29.8 4 24 4 16 4 9.2 8.7 6.3 14.7z" fill="#FBBC05"/>
-                <path d="M24 44c5.2 0 9.6-1.9 13-5.1l-6.2-5c-2 1.9-4.7 3.1-7.8 3.1-5.2 0-9.6-3-11.1-7.2l-6.7 5.1C8.9 38.9 16 44 24 44z" fill="#34A853"/>
-                <path d="M43.6 20.4H42V20H24v8h11.3c-1.1 3.2-3.4 5.8-6.3 7.4l-.1.1 6.2 5C39.8 36.8 44 30.9 44 24c0-1.3-.1-2.6-.4-3.6z" fill="#4285F4"/>
-              </svg>
-              Continue with Google
-            </button>
-            )}
-            <div className="text-center text-sm text-gray-500">
-              {mode === 'admin' ? 'or continue with email' : 'or continue with staff email'}
+            <div className="pt-1 text-xs font-medium tracking-wide text-slate-500 uppercase">
+              {mode === 'admin' ? 'Admin email & password' : 'Staff email & 4‑digit PIN'}
             </div>
             <div>
             {/* Simple success modal shown when account is created but not auto-logged-in */}

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Plus, Search, Edit, Trash2, Check, ChevronsUpDown } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, Check, ChevronsUpDown, Loader2 } from 'lucide-react';
 import { PageHeader, DataTableWrapper, NumericCell } from '@/components/common/PageComponents';
 import { useCurrency } from '@/contexts/CurrencyContext';
 import { Button } from '@/components/ui/button';
@@ -64,6 +64,7 @@ export default function Recipes() {
   const [searchTerm, setSearchTerm] = useState('');
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const location = useLocation();
 
   const stockById = useMemo(() => new Map(stockItems.map(s => [s.id, s] as const)), [stockItems]);
@@ -110,6 +111,22 @@ export default function Recipes() {
     }
   }, [location, recipes]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadData = async () => {
+      setIsLoading(true);
+      try {
+        await ensureRecipesLoaded();
+      } catch (err) {
+        console.warn('Failed to load recipes', err);
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    };
+    void loadData();
+    return () => { cancelled = true; };
+  }, []);
+
   const handleDelete = async (id: string) => {
     try {
       await deleteManufacturingRecipe(id);
@@ -135,9 +152,15 @@ export default function Recipes() {
         </div>
       </div>
 
-      <div className="grid gap-4">
-        {filteredRecipes.map((recipe) => (
-          <Card key={recipe.id}>
+      {isLoading ? (
+        <div className="flex items-center justify-center h-64">
+          <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+          <span>Loading recipes…</span>
+        </div>
+      ) : (
+        <div className="grid gap-4">
+          {filteredRecipes.map((recipe) => (
+            <Card key={recipe.id}>
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <div>
@@ -179,6 +202,7 @@ export default function Recipes() {
           </Card>
         ))}
       </div>
+      )}
 
       <RecipeEditorDialog
         open={editorOpen}
@@ -201,7 +225,7 @@ export default function Recipes() {
 type DraftIngredient = {
   id: string;
   ingredientId: string;
-  requiredQty: number;
+  requiredQty: number | '';
   unit?: string;
 };
 
@@ -218,7 +242,7 @@ function computeCosts(params: { draft: { outputQty: number; ingredients: DraftIn
       // (KG for mass, LTRS for liquids). Some older recipes may still store
       // quantities in 'g'/'ml' textual units; handle that by converting here.
       const ingUnitText = (ing as any).unit ?? (s ? ((s as any).unit) : undefined);
-      let effectiveQty = Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
+      let effectiveQty = (ing.requiredQty === '' || ing.requiredQty === undefined) ? 0 : (Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0);
       if (s && ingUnitText) {
         const iu = String(ingUnitText).toLowerCase();
         if (iu === 'g' && s.unitType === 'KG') {
@@ -234,7 +258,7 @@ function computeCosts(params: { draft: { outputQty: number; ingredients: DraftIn
       const unitCost = s ? s.currentCost : 0;
       return sum + effectiveQty * (Number.isFinite(unitCost) ? unitCost : 0);
     }, 0);
-  const outputQty = params.draft.outputQty > 0 ? params.draft.outputQty : 1;
+  const outputQty = (params.draft.outputQty === '' || params.draft.outputQty <= 0) ? 1 : params.draft.outputQty;
   const unit = total / outputQty;
   return { totalCost: total, unitCost: unit };
 }
@@ -261,7 +285,7 @@ export function RecipeEditorDialog(props: {
   const [parentItemId, setParentItemId] = useState(editing?.parentItemId ?? '');
   const [autoLinkedCode, setAutoLinkedCode] = useState<string | null>(null);
   const [finishedDept, setFinishedDept] = useState<DepartmentId>((editing?.finishedGoodDepartmentId ?? '') as DepartmentId);
-  const [outputQty, setOutputQty] = useState<number>(editing?.outputQty ?? 1);
+  const [outputQty, setOutputQty] = useState<number | ''>(editing?.outputQty ?? '');
   const [outputUnitType, setOutputUnitType] = useState<UnitType>((editing?.outputUnitType ?? 'EACH') as UnitType);
   const [ingredients, setIngredients] = useState<DraftIngredient[]>(
     (editing?.ingredients ?? []).map((i) => ({ id: i.id, ingredientId: i.ingredientId, requiredQty: i.requiredQty }))
@@ -269,6 +293,7 @@ export function RecipeEditorDialog(props: {
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [conversionHelper, setConversionHelper] = useState<Record<string, string>>({});
+  const [isSaving, setIsSaving] = useState(false);
 
   // Reset when opening or changing edit target
   useEffect(() => {
@@ -278,7 +303,7 @@ export function RecipeEditorDialog(props: {
     setParentItemId(editing?.parentItemId ?? initialValues?.parentItemId ?? '');
     setAutoLinkedCode(null);
     setFinishedDept((editing?.finishedGoodDepartmentId ?? initialValues?.finishedGoodDepartmentId ?? (departmentsList.length ? departmentsList[0].id : '')) as DepartmentId);
-    setOutputQty(editing?.outputQty ?? 1);
+    setOutputQty(editing?.outputQty ?? '');
     setOutputUnitType((editing?.outputUnitType ?? 'EACH') as UnitType);
     const mapUnitTypeToUnit = (u: UnitType | undefined): string => {
       switch (u) {
@@ -290,7 +315,7 @@ export function RecipeEditorDialog(props: {
           return 'each';
       }
     };
-    setIngredients((editing?.ingredients ?? []).map((i) => ({ id: i.id, ingredientId: i.ingredientId, requiredQty: i.requiredQty, unit: (i as any).unit ?? getStockUnit(byId.get(i.ingredientId)) ?? mapUnitTypeToUnit(i.unitType) })));
+    setIngredients((editing?.ingredients ?? []).map((i) => ({ id: i.id, ingredientId: i.ingredientId, requiredQty: i.requiredQty || '', unit: (i as any).unit ?? getStockUnit(byId.get(i.ingredientId)) ?? mapUnitTypeToUnit(i.unitType) })));
   }, [open, editing?.id, departmentsList, initialValues?.parentItemCode, initialValues?.parentItemName]);
 
   const nameMatches = useMemo(() => {
@@ -360,7 +385,7 @@ export function RecipeEditorDialog(props: {
       }
     };
     const defaultUnit = getStockUnit(stock) ?? mapUnitTypeToUnit(stock?.unitType);
-    setIngredients(prev => [...prev, { id: safeId('ri'), ingredientId: stockItemId, requiredQty: 0, unit: defaultUnit }]);
+    setIngredients(prev => [...prev, { id: safeId('ri'), ingredientId: stockItemId, requiredQty: '', unit: defaultUnit }]);
     setPickerOpen(false);
   };
 
@@ -372,7 +397,10 @@ export function RecipeEditorDialog(props: {
     const trimmedName = name.trim();
     const trimmedCode = code.trim();
     if (!trimmedName || !trimmedCode) return;
-    if (outputQty <= 0) return;
+    if (outputQty === '' || outputQty <= 0) return;
+
+    setIsSaving(true);
+    try {
 
     // Validation: for KG/LTRS stock items the ingredient must use a mass/liquid unit
     for (const i of ingredients) {
@@ -407,7 +435,7 @@ export function RecipeEditorDialog(props: {
         // Normalize requiredQty to the stock base unit when the user entered
         // grams/ml. Store the numeric value in base units and set the textual
         // unit to the base unit (kg / l) so later math is consistent.
-        let reqQty = Number.isFinite(i.requiredQty) ? i.requiredQty : 0;
+        let reqQty = (i.requiredQty === '' || i.requiredQty === undefined) ? 0 : (Number.isFinite(i.requiredQty) ? i.requiredQty : 0);
         let unitTextToStore: string | undefined = i.unit;
         if (i.unit) {
           const uu = String(i.unit).toLowerCase();
@@ -441,7 +469,7 @@ export function RecipeEditorDialog(props: {
       parentItemCode: trimmedCode,
       parentItemName: trimmedName,
       finishedGoodDepartmentId: finishedDept,
-      outputQty,
+      outputQty: outputQty === '' ? 1 : Number(outputQty),
       outputUnitType,
       ingredients: recipeIngredients,
     });
@@ -458,10 +486,16 @@ export function RecipeEditorDialog(props: {
     }
 
     onOpenChange(false);
+  } finally {
+    setIsSaving(false);
+  }
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(newOpen) => {
+      if (isSaving) return; // Prevent closing while saving
+      onOpenChange(newOpen);
+    }}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>{editing ? 'Edit Recipe' : 'New Recipe'}</DialogTitle>
@@ -537,7 +571,15 @@ export function RecipeEditorDialog(props: {
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Output Qty</Label>
-              <Input type="number" min={0.0001} step="0.01" value={outputQty} onChange={(e) => setOutputQty(Math.max(0.0001, Number(e.target.value || 1)))} />
+              <Input type="number" min={0.0001} step="0.01" value={outputQty} onChange={(e) => {
+                const val = e.target.value;
+                if (val === '') {
+                  setOutputQty('');
+                } else {
+                  const num = Number(val);
+                  setOutputQty(num > 0 ? num : '');
+                }
+              }} />
             </div>
             <div className="space-y-1">
               <Label>Unit</Label>
@@ -618,8 +660,9 @@ export function RecipeEditorDialog(props: {
                             step="0.01"
                             value={ing.requiredQty}
                             onChange={(e) => {
-                              const v = Number(e.target.value || 0);
-                              setIngredients(prev => prev.map(p => (p.id === ing.id ? { ...p, requiredQty: Number.isFinite(v) ? v : 0 } : p)));
+                              const val = e.target.value;
+                              const v = val === '' ? '' : Number(val);
+                              setIngredients(prev => prev.map(p => (p.id === ing.id ? { ...p, requiredQty: Number.isFinite(v) ? v : (val === '' ? '' : 0) } : p)));
                             }}
                           />
                           <Select
@@ -682,8 +725,11 @@ export function RecipeEditorDialog(props: {
         </DataTableWrapper>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={save}>Save Recipe</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>Cancel</Button>
+          <Button onClick={save} disabled={isSaving}>
+            {isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+            {isSaving ? 'Saving...' : 'Save Recipe'}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

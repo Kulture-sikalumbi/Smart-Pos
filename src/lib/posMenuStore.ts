@@ -432,7 +432,7 @@ export async function upsertPosMenuItem(item: POSMenuItem): Promise<void> {
         updated_at: new Date().toISOString(),
       };
 
-      const { data, error, status } = await client.from('pos_menu_items').upsert(clientPayload).select('*');
+      const { data, error, status } = await client.from('pos_menu_items').upsert(clientPayload).select();
       if (error) throw { source: 'erp', status, error, data };
       await refreshFromSupabase();
       return;
@@ -459,7 +459,7 @@ export async function upsertPosMenuItem(item: POSMenuItem): Promise<void> {
     // Debug logging: show the payload and server response when an upsert fails
     try {
       console.debug('[posMenuStore] upsert products payload', pubPayload);
-      const { data: pubData, error: pubErr, status: pubStatus } = await supabase!.from('products').upsert(pubPayload).select('*');
+      const { data: pubData, error: pubErr, status: pubStatus } = await supabase!.from('products').upsert(pubPayload).select();
       if (pubErr) {
         console.error('[posMenuStore] upsert menu item failed (public)', { status: pubStatus, error: pubErr, data: pubData, payload: pubPayload });
         throw pubErr;

@@ -4,6 +4,7 @@ import { PageHeader } from '@/components/common/PageComponents';
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
@@ -37,7 +38,7 @@ interface MenuItem {
   description?: string;
 }
 
-export const MenuManager: React.FC = () => {
+const MenuManager: React.FC = () => {
   const { formatMoneyPrecise } = useCurrency();
   const [items, setItems] = useState<MenuItem[]>([]);
   const [editing, setEditing] = useState<MenuItem | null>(null);
@@ -60,7 +61,10 @@ export const MenuManager: React.FC = () => {
   const [recipeToOpenId, setRecipeToOpenId] = useState<string | null>(null);
   const [validationModalOpen, setValidationModalOpen] = useState(false);
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
-  const validationErrors = React.useMemo(() => {
+  const [isLoading, setIsLoading] = useState(true);
+  const [stockSuggestionsOpen, setStockSuggestionsOpen] = useState(false);
+  const [confirmRetailModalOpen, setConfirmRetailModalOpen] = useState(false);
+  const [pendingStockSelection, setPendingStockSelection] = useState<any>(null);
     const errs: string[] = [];
     const name = String(form.name ?? '').trim();
     const price = Number(form.price ?? 0);
@@ -80,6 +84,8 @@ export const MenuManager: React.FC = () => {
         if (mounted) setItems(local as any);
       } catch {
         if (mounted) setItems([]);
+      } finally {
+        if (mounted) setIsLoading(false);
       }
     };
 
@@ -231,6 +237,9 @@ export const MenuManager: React.FC = () => {
     setIsRetail(false);
     setSelectedStockId(undefined);
     setSearchStockTerm('');
+    setStockSuggestionsOpen(false);
+    setConfirmRetailModalOpen(false);
+    setPendingStockSelection(null);
     setIsSaving(false);
   };
 
@@ -262,12 +271,19 @@ export const MenuManager: React.FC = () => {
     setForm({});
     setIsRetail(false);
     setSelectedStockId(undefined);
+    setSearchStockTerm('');
+    setStockSuggestionsOpen(false);
+    setConfirmRetailModalOpen(false);
+    setPendingStockSelection(null);
     setShowModal(true);
   };
 
   const openEditModal = (item: MenuItem) => {
     setEditing(item);
     setForm(item);
+    setStockSuggestionsOpen(false);
+    setConfirmRetailModalOpen(false);
+    setPendingStockSelection(null);
     // try to detect if a recipe exists linked to this item and prefill retail/stock
     try {
       const linked = recipes.find(r => String(r.parentItemCode) === String((item as any).code));
@@ -291,7 +307,13 @@ export const MenuManager: React.FC = () => {
     <div>
       <PageHeader title="POS Menu" description="Manage items sold at the POS" actions={<Button onClick={openAddModal}><Plus className="h-4 w-4 mr-2" />Add Menu Item</Button>} />
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {isLoading ? (
+        <div className="flex items-center justify-center h-64 w-full">
+          <Loader2 className="mr-2 h-6 w-6 animate-spin" />
+          <span>Loading menu items…</span>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {items.map((item) => {
           // Resolve image preview (storage path or remote URL)
           let imgSrc: string | undefined = undefined;
@@ -354,6 +376,7 @@ export const MenuManager: React.FC = () => {
           );
         })}
       </div>
+      )}
 
       <Dialog open={showModal} onOpenChange={setShowModal}>
         <DialogContent className="max-w-lg max-h-[80vh] overflow-auto">
@@ -362,16 +385,40 @@ export const MenuManager: React.FC = () => {
               <DialogTitle>{editing ? 'Edit Menu Item' : 'Add Menu Item'}</DialogTitle>
               <DialogDescription className="sr-only">Add or edit a menu item</DialogDescription>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2">
-                <Switch checked={isRetail} onCheckedChange={(v: any) => setIsRetail(Boolean(v))} />
-                <div className="text-sm">Retail Item? (Link to Ready-to-Sell Stock) </div>
+            {!editing && !isRetail && (
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <Switch checked={isRetail} onCheckedChange={(v: any) => setIsRetail(Boolean(v))} />
+                  <div className="text-sm">Retail Item? (Link to Ready-to-Sell Stock) </div>
+                </div>
               </div>
-            </div>
+            )}
           </DialogHeader>
 
           <div className="grid gap-3">
-            {isRetail ? (
+            {isRetail && selectedStockId ? (
+              <div className="p-3 bg-blue-50 dark:bg-blue-950/20 rounded-md border border-blue-200 dark:border-blue-800">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-blue-900 dark:text-blue-100">Retail Item Linked</div>
+                    <div className="text-xs text-blue-700 dark:text-blue-300">
+                      Connected to stock item: {stockItems.find(s => s.id === selectedStockId)?.name}
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setIsRetail(false);
+                      setSelectedStockId(undefined);
+                      setSearchStockTerm('');
+                    }}
+                  >
+                    Change
+                  </Button>
+                </div>
+              </div>
+            ) : isRetail ? (
               <div className="relative">
                 <Label>Which stock item?</Label>
                 <input
@@ -452,7 +499,77 @@ export const MenuManager: React.FC = () => {
 
             <div className="space-y-1">
               <Label>Name</Label>
-              <Input value={form.name ?? ''} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+              <Popover open={stockSuggestionsOpen} onOpenChange={setStockSuggestionsOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={stockSuggestionsOpen}
+                    className="w-full justify-between"
+                  >
+                    {form.name || "Search stock items or enter name..."}
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-full p-0">
+                  <Command>
+                    <CommandInput
+                      placeholder="Search stock items..."
+                      value={form.name || ''}
+                      onValueChange={(value) => {
+                        setForm({ ...form, name: value });
+                        setStockSuggestionsOpen(true);
+                      }}
+                    />
+                    <CommandEmpty>No stock items found.</CommandEmpty>
+                    <CommandGroup>
+                      {stockItems
+                        .filter(s => {
+                          if (!form.name) return true;
+                          const q = (form.name || '').toLowerCase();
+                          return String(s.name ?? '').toLowerCase().includes(q) ||
+                                 String(s.code ?? '').toLowerCase().includes(q);
+                        })
+                        .slice(0, 10)
+                        .map(s => (
+                          <CommandItem
+                            key={s.id}
+                            value={s.name}
+                            onSelect={() => {
+                              // Prefill form with stock item details
+                              setForm({
+                                ...form,
+                                name: s.name,
+                                code: s.code,
+                                price: s.currentCost || form.price,
+                                categoryId: s.departmentId || form.categoryId
+                              });
+                              setSelectedStockId(s.id);
+                              setIsRetail(true);
+                              setStockSuggestionsOpen(false);
+                              // Show confirmation about creating direct recipe
+                              setPendingStockSelection(s);
+                              setConfirmRetailModalOpen(true);
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                selectedStockId === s.id ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            <div className="flex flex-col">
+                              <span>{s.name}</span>
+                              <span className="text-xs text-muted-foreground">
+                                Code: {s.code} | Stock: {s.currentStock?.toFixed(2) || '0.00'} | Cost: {formatMoneyPrecise(s.currentCost || 0, 2)}
+                              </span>
+                            </div>
+                          </CommandItem>
+                        ))}
+                    </CommandGroup>
+                  </Command>
+                </PopoverContent>
+              </Popover>
             </div>
 
             <div className="space-y-1">
@@ -466,7 +583,7 @@ export const MenuManager: React.FC = () => {
 
             <div className="space-y-1">
               <Label>Price</Label>
-              <Input type="number" value={form.price ?? 0} onChange={(e) => setForm({ ...form, price: Number(e.target.value) })} />
+              <Input type="number" value={form.price ?? ''} onChange={(e) => setForm({ ...form, price: e.target.value ? Number(e.target.value) : undefined })} />
             </div>
 
             <div className="space-y-1">
@@ -555,6 +672,38 @@ export const MenuManager: React.FC = () => {
           </DialogContent>
         </Dialog>
 
+        <Dialog open={confirmRetailModalOpen} onOpenChange={setConfirmRetailModalOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Create Direct Recipe</DialogTitle>
+              <DialogDescription>
+                You're linking this menu item directly to the stock item "{pendingStockSelection?.name}".
+                This will automatically create a 1:1 manufacturing recipe that connects the menu item to this stock item for inventory tracking.
+                <br /><br />
+                When this item is sold, it will deduct 1 unit from the stock item's inventory.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => {
+                setConfirmRetailModalOpen(false);
+                setPendingStockSelection(null);
+                // Reset to manual entry mode
+                setIsRetail(false);
+                setSelectedStockId(undefined);
+              }}>
+                Cancel
+              </Button>
+              <Button onClick={() => {
+                setConfirmRetailModalOpen(false);
+                setPendingStockSelection(null);
+                // Keep the retail setup
+              }}>
+                OK, Create Recipe
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
           <RecipeEditorDialog
             open={recipeEditorOpen}
             onOpenChange={(open) => { setRecipeEditorOpen(open); if (!open) setRecipeToOpenId(null); }}
@@ -573,3 +722,6 @@ export const MenuManager: React.FC = () => {
     </div>
   );
 };
+
+export default MenuManager;
+
