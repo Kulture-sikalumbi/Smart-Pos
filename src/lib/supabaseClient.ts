@@ -22,3 +22,15 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured()
       auth: { persistSession: true },
     })
   : null;
+
+// Expose client to window during development to aid debugging in DevTools console.
+// Do NOT rely on this in production; it's a dev-time convenience.
+try {
+  if (typeof window !== 'undefined' && import.meta.env?.DEV && supabase) {
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
+    window.__supabase = supabase;
+  }
+} catch {
+  // ignore
+}

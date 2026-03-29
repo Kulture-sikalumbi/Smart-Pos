@@ -42,9 +42,14 @@ import {
   getStockIssuesSnapshot,
   StockIssueError,
   subscribeStockIssues,
+  subscribeStockIssuesLoading,
+  getStockIssuesLoadingSnapshot,
   ensureStockIssuesLoaded,
 } from '@/lib/stockIssueStore';
+import { getActiveBrandId } from '@/lib/activeBrand';
+import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
+import { getStockItemById } from '@/lib/stockStore';
 
 type DraftIssueLine = {
   id: string;
@@ -125,12 +130,27 @@ function dateKeyLocal(d: Date) {
 export default function StockIssues() {
   const stockItems = useSyncExternalStore(subscribeStockItems, getStockItemsSnapshot);
   const issues = useSyncExternalStore(subscribeStockIssues, getStockIssuesSnapshot);
-  const [loading, setLoading] = useState(true);
+  const loading = useSyncExternalStore(subscribeStockIssuesLoading, getStockIssuesLoadingSnapshot);
 
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [issueDate, setIssueDate] = useState<string>(dateKeyLocal(new Date()));
   const [createdBy, setCreatedBy] = useState('System');
+  const { user: authUser, allUsers } = useAuth();
+  const currentUserId = authUser?.id ?? null;
+  const currentUserFullName = authUser?.name ?? authUser?.email ?? '';
+
+  useEffect(() => {
+    setCreatedBy(currentUserFullName || 'System');
+  }, [currentUserFullName]);
+
+  const userNameById = React.useMemo(() => {
+    const m = new Map<string, string>();
+    for (const u of allUsers ?? []) {
+      if (u?.id) m.set(u.id, u.name ?? '');
+    }
+    return m;
+  }, [allUsers]);
   const [search, setSearch] = useState('');
 
   const [draftLines, setDraftLines] = useState<DraftIssueLine[]>(() => [
@@ -229,37 +249,51 @@ export default function StockIssues() {
   }, [draftLines, stockItems]);
 
   const issueGroups = useMemo(() => {
-    const grouped = new Map<
-      number,
-      { issueNo: number; date: string; createdBy: string; items: typeof issues; totalValue: number }
-    >();
+    // Group stock_issue rows that belong to the same RPC batch by createdAt + createdBy
+    const all = (issues || []).slice().sort((a, b) => {
+      const ta = a.createdAt ?? a.created_at ?? a.date ?? '';
+      const tb = b.createdAt ?? b.created_at ?? b.date ?? '';
+      return String(tb).localeCompare(String(ta));
+    });
 
-    for (const issue of issues) {
-      const existing = grouped.get(issue.issueNo) ?? {
-        issueNo: issue.issueNo,
-        date: issue.date,
-        createdBy: issue.createdBy,
-        items: [],
-        totalValue: 0,
-      };
-      existing.items = [...existing.items, issue];
-      existing.totalValue = (existing.totalValue ?? 0) + (Number.isFinite(issue.value) ? issue.value : 0);
-      grouped.set(issue.issueNo, existing);
+    // bucket by key
+    const groups = new Map<string, any>();
+    for (const r of all) {
+      const createdAt = String(r.createdAt ?? r.created_at ?? r.date ?? '');
+      const createdById = String(r.createdBy ?? r.created_by ?? '');
+      const key = `${createdById}::${createdAt}`;
+      if (!groups.has(key)) groups.set(key, { key, createdAt, createdById, lines: [] as any[] });
+      groups.get(key).lines.push(r);
     }
 
-    const all = Array.from(grouped.values()).sort((a, b) => b.issueNo - a.issueNo);
     const q = search.trim().toLowerCase();
-    if (!q) return all;
-
-    return all.filter((g) => {
-      if (String(g.issueNo).includes(q)) return true;
-      if (String(g.createdBy).toLowerCase().includes(q)) return true;
-      if (String(g.date).toLowerCase().includes(q)) return true;
-      return g.items.some((it) =>
-        `${it.originItemCode} ${it.destinationItemCode}`.toLowerCase().includes(q)
-      );
+    const out = Array.from(groups.values()).map((g) => {
+      // compute group metadata
+      const totalValue = g.lines.reduce((s: number, l: any) => s + Number(l.totalValueLost ?? l.total_value_lost ?? 0), 0);
+      const first = g.lines[0];
+      return {
+        key: g.key,
+        createdAt: g.createdAt,
+        createdById: g.createdById,
+        totalValue,
+        lines: g.lines,
+        first,
+      };
+    }).filter((grp) => {
+      if (!q) return true;
+      // match if any line matches
+      return grp.lines.some((it: any) => {
+        const item = getStockItemById(it.stockItemId);
+        const code = item?.code ?? '';
+        const name = item?.name ?? '';
+        const date = String(it.createdAt ?? it.created_at ?? it.date ?? '');
+        const creatorName = userNameById.get(String(it.createdBy ?? it.created_by ?? '')) ?? String(it.createdBy ?? it.created_by ?? '');
+        return (`${code} ${name}`.toLowerCase().includes(q)) || date.toLowerCase().includes(q) || creatorName.toLowerCase().includes(q);
+      });
     });
-  }, [issues, search]);
+
+    return out;
+  }, [issues, search, userNameById]);
 
   function resetDialog() {
     setDraftLines([{ id: `dl-${crypto.randomUUID()}`, stockItemId: '', qty: '', inputUnit: undefined, issueType: 'Wastage', notes: '' }]);
@@ -267,20 +301,9 @@ export default function StockIssues() {
     setIssueDate(dateKeyLocal(new Date()));
   }
 
-  // Load DB-backed issues on mount and show loading state while fetching.
+  // Trigger initial load on mount; loading state comes from the store.
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        setLoading(true);
-        await ensureStockIssuesLoaded();
-      } catch (e) {
-        // ignore; store will log debug
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-    return () => { mounted = false; };
+    void ensureStockIssuesLoaded();
   }, []);
 
   function addLine() {
@@ -293,28 +316,53 @@ export default function StockIssues() {
 
   async function confirmIssue() {
     if (!validated.canConfirm) return;
-
-    try {
-      const payloadLines = validated.validLines.map((l: any) => ({
-        stockItemId: l.stockItemId,
-        issueType: l.issueType,
-        qtyIssued: l.baseQty,
-        unitCostAtTime: l.item?.currentCost ?? undefined,
+    const brandId = getActiveBrandId();
+    const payloadLines = validated.validLines.map((l: any) => {
+      const unitCost = l.item?.currentCost ?? 0;
+      const totalValue = Math.round((Number(l.baseQty ?? 0) * unitCost + Number.EPSILON) * 100) / 100;
+      return {
+        id: l.id ?? `iss-${crypto.randomUUID()}`,
+        stock_item_id: l.stockItemId,
+        issue_type: l.issueType,
+        qty_issued: l.baseQty,
+        unit_cost_at_time: unitCost,
+        total_value_lost: totalValue,
         notes: l.notes ?? null,
-      }));
+      };
+    });
 
+    setIsSaving(true);
+    try {
+      if (!currentUserId) {
+        toast({ title: 'No active user', description: 'Select an operator before submitting.', variant: 'destructive' });
+        return;
+      }
       await createStockIssue({
+        brandId: brandId,
         date: issueDate,
-        createdBy: createdBy.trim() || 'System',
+        createdBy: currentUserId,
         lines: payloadLines,
-      });
+      } as any);
 
       toast({ title: 'Stock issued', description: `Saved ${payloadLines.length} issue(s).` });
       setIsAddDialogOpen(false);
       resetDialog();
     } catch (e) {
       const msg = e instanceof StockIssueError ? e.message : (e as Error)?.message ?? 'Failed to create issue.';
-      toast({ title: 'Cannot issue stock', description: msg, variant: 'destructive' });
+      // Specific handling for DB-reported insufficiency (user-friendly toast)
+      if (/insufficient stock|insufficient|low stock/i.test(String(msg))) {
+        toast({ title: 'Insufficient stock', description: msg, variant: 'destructive' });
+      } else if (/42501|permission|forbid|forbidden|403/i.test(String(msg))) {
+        toast({
+          title: 'Permission denied',
+          description: 'Cannot modify stock directly. Ensure the `process_stock_issue` RPC is available and run the debug steps in cd.md.',
+          variant: 'destructive',
+        });
+      } else {
+        toast({ title: 'Cannot issue stock', description: msg, variant: 'destructive' });
+      }
+    } finally {
+      setIsSaving(false);
     }
   }
 
@@ -365,16 +413,19 @@ export default function StockIssues() {
                     <Input
                       id="createdBy"
                       value={createdBy}
-                      onChange={(e) => setCreatedBy(e.target.value)}
+                      disabled
                     />
                   </div>
                 </div>
 
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <Label>Issue Lines</Label>
+                    <div>
+                      <Label>Issue Lines</Label>
+                      <p className="text-xs text-muted-foreground">You can add multiple products — each will be saved as its own issue. Notes are optional.</p>
+                    </div>
                     <Button type="button" variant="outline" size="sm" onClick={addLine}>
-                      <Plus className="h-4 w-4 mr-2" /> Add line
+                      <Plus className="h-4 w-4 mr-2" /> Add another item
                     </Button>
                   </div>
 
@@ -457,7 +508,7 @@ export default function StockIssues() {
                               </div>
 
                               <div className="space-y-2 sm:col-span-2">
-                                <Label>Notes</Label>
+                                <Label>Notes <span className="text-xs text-muted-foreground">(optional)</span></Label>
                                 <Input value={l.notes ?? ''} className={cn(invalid && 'border-destructive')} onChange={(e) => setDraftLines((prev) => prev.map((x) => (x.id === l.id ? { ...x, notes: e.target.value } : x)))} />
                               </div>
                             </div>
@@ -516,14 +567,25 @@ export default function StockIssues() {
                 <Button variant="outline" onClick={() => setIsAddDialogOpen(false)} disabled={isSaving}>
                   Cancel
                 </Button>
-                <Button onClick={confirmIssue} disabled={!validated.canConfirm || isSaving}>
+                <Button
+                  onClick={confirmIssue}
+                  disabled={!validated.canConfirm || isSaving || !currentUserId}
+                  aria-busy={isSaving}
+                  className={cn(
+                    'inline-flex items-center gap-2 transition-transform duration-150',
+                    isSaving ? 'scale-95 opacity-80 animate-pulse' : 'hover:scale-[1.02]'
+                  )}
+                >
                   {isSaving ? (
                     <>
                       <span className="inline-block h-4 w-4 mr-2 animate-spin rounded-full border-t-2 border-b-2 border-white/50" />
                       Saving...
                     </>
                   ) : (
-                    'Confirm Issue'
+                    <>
+                      <svg className="h-4 w-4 mr-2 opacity-90" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v7l4 2" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      Confirm Issue
+                    </>
                   )}
                 </Button>
               </DialogFooter>
@@ -532,11 +594,7 @@ export default function StockIssues() {
         }
       />
 
-      {loading ? (
-        <div className="flex items-center justify-center min-h-[40vh]">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-primary/60 border-opacity-30" />
-        </div>
-      ) : null}
+      {/* loading spinner moved below the search (cards area) */}
 
       <div className="flex flex-col sm:flex-row gap-4 mb-6">
         <div className="relative flex-1">
@@ -555,59 +613,79 @@ export default function StockIssues() {
       </div>
 
       <div className="space-y-4">
-        {issueGroups.map((group) => (
-          <Card key={group.issueNo}>
-            <CardContent className="p-0">
-              <div className="flex items-center justify-between p-4 border-b bg-muted/30">
-                <div>
-                  <p className="font-medium">Issue #{group.issueNo}</p>
-                  <p className="text-sm text-muted-foreground">
-                    {group.date} • By {group.createdBy}
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-sm text-muted-foreground">Total Value</p>
-                  <p className="font-medium">K {group.totalValue.toFixed(2)}</p>
-                </div>
-              </div>
+        {loading ? (
+          <div className="flex items-center justify-center py-6">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-primary/60 border-opacity-30" />
+          </div>
+        ) : null}
 
-              <DataTableWrapper className="border-0 rounded-none">
-                <Table className="data-table">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Origin Code</TableHead>
-                      <TableHead>Dest Code</TableHead>
-                      <TableHead className="text-right">Was</TableHead>
-                      <TableHead className="text-right">Issued</TableHead>
-                      <TableHead className="text-right">Now</TableHead>
-                      <TableHead className="text-right">Value</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {group.items.map((issue) => (
-                      <TableRow key={issue.id}>
-                        <TableCell className="font-mono">{issue.originItemCode}</TableCell>
-                        <TableCell className="font-mono">{issue.destinationItemCode}</TableCell>
-                        <TableCell className="text-right">
-                          <NumericCell value={issue.wasQty} />
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <NumericCell value={issue.issuedQty} showSign colorCode />
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <NumericCell value={issue.nowQty} />
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <NumericCell value={issue.value} money showSign colorCode />
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </DataTableWrapper>
-            </CardContent>
-          </Card>
-        ))}
+        {issueGroups.map((grp) => {
+          const first = grp.first;
+          const item = getStockItemById(first.stockItemId);
+          const code = item?.code ?? first.stockItemId;
+          const name = item?.name ?? '';
+          const date = grp.createdAt ?? first.createdAt ?? first.date ?? '';
+          const creatorId = grp.createdById ?? first.createdBy ?? first.created_by ?? '';
+          const creator = userNameById.get(String(creatorId)) ?? (String(creatorId) === String(currentUserId) ? currentUserFullName : String(creatorId));
+          const issueType = grp.lines.length === 1 ? (first.issueType ?? first.issue_type) : (() => {
+            const types = Array.from(new Set(grp.lines.map((l: any) => (l.issueType ?? l.issue_type))));
+            return types.length === 1 ? types[0] : 'Multiple';
+          })();
+
+          return (
+            <Card key={grp.key}>
+              <CardContent className="p-0">
+                <div className="flex items-center justify-between p-4 border-b bg-muted/30">
+                  <div>
+                              <div className="flex items-center gap-3">
+                                {grp.issueNo ? (
+                                  <p className="font-medium text-white">Issue {grp.issueNo}</p>
+                                ) : (
+                                  <p className="font-medium text-white">{new Date(date).toLocaleString()}</p>
+                                )}
+                                <span className="inline-flex items-center px-2 py-0.5 rounded bg-primary text-white text-xs font-semibold">{issueType}</span>
+                                {grp.lines.length > 1 ? <span className="text-sm text-muted-foreground ml-2">{grp.lines.length} items</span> : null}
+                              </div>
+                              <p className="text-sm text-white/80">By {creator}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm text-muted-foreground">Value</p>
+                    <p className="font-medium">K {Number(grp.totalValue ?? 0).toFixed(2)}</p>
+                  </div>
+                </div>
+
+                <div className="p-4 space-y-3">
+                  {grp.lines.map((line: any) => {
+                    const liItem = getStockItemById(line.stockItemId);
+                    const liCode = liItem?.code ?? line.stockItemId;
+                    const liName = liItem?.name ?? '';
+                    const liUnit = liItem ? baseUnitLabel(liItem.unitType) : '';
+                    return (
+                      <div key={line.id} className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+                        <div>
+                          <div className="text-xs text-muted-foreground">Item</div>
+                          <div className="font-medium">{liCode} • {liName}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-muted-foreground">Qty Issued</div>
+                          <div className="font-medium text-right">{Number(line.qtyIssued ?? line.qty_issued ?? 0)} {liUnit}</div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-muted-foreground">Unit Cost</div>
+                          <div className="font-medium text-right">K {(Number(line.unitCostAtTime ?? line.unit_cost_at_time ?? 0)).toFixed(2)}</div>
+                        </div>
+                        <div className="sm:col-span-1">
+                          <div className="text-xs text-muted-foreground">Notes</div>
+                          <div className="text-sm">{line.notes ?? ''}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
 
         {!issueGroups.length && (
           <Card>

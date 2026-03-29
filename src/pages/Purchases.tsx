@@ -427,6 +427,7 @@ function GRVDialog({
   const [applyVat, setApplyVat] = useState(true);
   const vatRate = 0.16;
   const [items, setItems] = useState<GRVLine[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
 
   const [itemOpen, setItemOpen] = useState(false);
   const [itemQuery, setItemQuery] = useState('');
@@ -533,7 +534,19 @@ function GRVDialog({
 
   const hasSupplier = Boolean(supplierId) || Boolean(supplierName.trim());
   const hasValidLines = items.length > 0 && items.every((i) => Number(i.quantity ?? 0) > 0 && Number(i.unitCost ?? 0) >= 0);
-  const canSave = !locked && hasSupplier && date && hasValidLines;
+  const canSave = !locked && hasSupplier && date && hasValidLines && !isSaving;
+
+  const validateBeforeSave = () => {
+    if (!date || isNaN(new Date(date).getTime())) return 'Please provide a valid date.';
+    if (!hasSupplier) return 'Please select or enter a supplier.';
+    if (!items.length) return 'Add at least one item to the GRV.';
+    for (const i of items) {
+      if (!(Number(i.quantity) > 0)) return `Item ${i.itemName} has invalid quantity.`;
+      if (!(Number(i.unitCost) >= 0)) return `Item ${i.itemName} has invalid unit cost.`;
+    }
+    if (!receivedBy || !String(receivedBy).trim()) return 'Please enter who received these items.';
+    return null;
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -851,7 +864,13 @@ function GRVDialog({
           </Button>
           <Button
             disabled={!canSave}
-            onClick={() => {
+            onClick={async () => {
+              const validationError = validateBeforeSave();
+              if (validationError) {
+                toast({ title: 'Validation', description: validationError, variant: 'destructive' });
+                return;
+              }
+
               const safeItems = items.map(recomputeLine);
 
               if (!brandId) {
@@ -859,53 +878,44 @@ function GRVDialog({
                 return;
               }
 
-              if (active) {
-                void updateGRV(active.id, {
-                  brandId,
-                  date,
-                  supplierId,
-                  supplierName,
-                  paymentType,
-                  receivedBy,
-                  items: safeItems,
-                  applyVat,
-                  vatRate,
-                })
-                  .then(() => toast({ title: 'GRV saved' }))
-                  .catch((e) =>
-                    toast({
-                      title: 'Save failed',
-                      description: (e as any)?.message ?? 'Please try again.',
-                      variant: 'destructive',
-                    })
-                  )
-                  .finally(() => onOpenChange(false));
-                return;
+              setIsSaving(true);
+              try {
+                if (active) {
+                  await updateGRV(active.id, {
+                    brandId,
+                    date,
+                    supplierId,
+                    supplierName,
+                    paymentType,
+                    receivedBy,
+                    items: safeItems,
+                    applyVat,
+                    vatRate,
+                  });
+                  toast({ title: 'GRV saved' });
+                } else {
+                  await createDraftGRV({
+                    brandId,
+                    date,
+                    supplierId,
+                    supplierName,
+                    paymentType,
+                    receivedBy,
+                    items: safeItems,
+                    applyVat,
+                    vatRate,
+                  });
+                  toast({ title: 'Draft GRV created' });
+                }
+                onOpenChange(false);
+              } catch (e) {
+                toast({ title: active ? 'Save failed' : 'Create failed', description: (e as any)?.message ?? 'Please try again.', variant: 'destructive' });
+              } finally {
+                setIsSaving(false);
               }
-
-              void createDraftGRV({
-                brandId,
-                date,
-                supplierId,
-                supplierName,
-                paymentType,
-                receivedBy,
-                items: safeItems,
-                applyVat,
-                vatRate,
-              })
-                .then(() => toast({ title: 'Draft GRV created' }))
-                .catch((e) =>
-                  toast({
-                    title: 'Create failed',
-                    description: (e as any)?.message ?? 'Please try again.',
-                    variant: 'destructive',
-                  })
-                )
-                .finally(() => onOpenChange(false));
             }}
           >
-            Save
+            {isSaving ? 'Saving...' : 'Save'}
           </Button>
         </DialogFooter>
       </DialogContent>

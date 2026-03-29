@@ -127,6 +127,55 @@ export async function createDraftGRV(params: {
   const vatRate = params.vatRate ?? 0.16;
   const totals = computeTotals(items, applyVat, vatRate);
 
+  // Prefer server-side transactional RPC which inserts GRV + items atomically.
+  if (supabase) {
+    try {
+      const p_items = items.map((i) => ({
+        itemId: i.itemId,
+        itemCode: i.itemCode,
+        itemName: i.itemName,
+        quantity: i.quantity,
+        unitCost: i.unitCost,
+        totalCost: i.totalCost,
+      }));
+
+      const { data: rpcData, error: rpcError } = await supabase.rpc('grv_create', {
+        p_brand_id: params.brandId,
+        p_date: params.date,
+        p_supplier_id: params.supplierId ? params.supplierId : null,
+        p_supplier_name: params.supplierName,
+        p_payment_type: params.paymentType,
+        p_received_by: params.receivedBy,
+        p_items: p_items,
+      });
+
+      if (rpcError) {
+        // If the RPC is missing or not available, fall back to legacy insertion logic.
+        const msg = String(rpcError?.message ?? '').toLowerCase();
+        const code = String(rpcError?.code ?? '');
+        if (code === '42883' || msg.includes('function') && msg.includes('grv_create')) {
+          // Fall through to legacy path below
+          throw rpcError;
+        }
+        throw rpcError;
+      }
+
+      // RPC returned success; refresh and return the created GRV
+      await refreshGRVs(params.brandId);
+      const createdId = Array.isArray(rpcData) && rpcData[0] ? String(rpcData[0].grv_id ?? rpcData[0].id ?? '') : '';
+      if (createdId) return state.find((g) => g.id === createdId) ?? state[0];
+      return state[0];
+    } catch (err) {
+      // If RPC isn't available (function missing) then continue to legacy insert path below.
+      const lower = String((err as any)?.message ?? '').toLowerCase();
+      if (!lower.includes('grv_create') && String((err as any)?.code ?? '') !== '42883') {
+        throw err;
+      }
+      // else fall back
+    }
+  }
+
+  // Legacy fallback: insert parent then items (kept for backward compatibility)
   const { data: grv, error: grvError } = await supabase
     .from('grvs')
     .insert({
@@ -161,7 +210,15 @@ export async function createDraftGRV(params: {
       }))
     );
 
-    if (itemsError) throw itemsError;
+    if (itemsError) {
+      // Items insert failed — attempt to clean up the parent GRV to avoid orphaned records
+      try {
+        await supabase.from('grvs').delete().eq('id', grv.id);
+      } catch (cleanupErr) {
+        console.warn('Failed to cleanup GRV after grv_items insert error', cleanupErr);
+      }
+      throw itemsError;
+    }
   }
 
   await refreshGRVs(params.brandId);
@@ -224,8 +281,24 @@ export async function updateGRV(
 export async function confirmGRV(grvId: string) {
   if (!supabase) throw new Error('Supabase not configured');
 
-  const { error } = await supabase.rpc('grv_confirm', { p_grv_id: grvId });
-  if (error) throw error;
+  // Try RPC, retry once on transient failure.
+  let attempt = 0;
+  let lastErr: any = null;
+  while (attempt < 2) {
+    try {
+      const { error } = await supabase.rpc('grv_confirm', { p_grv_id: grvId });
+      if (error) throw error;
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      attempt += 1;
+      // small delay before retry
+      if (attempt < 2) await new Promise((res) => setTimeout(res, 500));
+    }
+  }
+
+  if (lastErr) throw lastErr;
 
   if (lastBrandId) await refreshGRVs(lastBrandId);
 }

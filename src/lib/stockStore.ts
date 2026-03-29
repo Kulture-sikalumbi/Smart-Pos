@@ -4,7 +4,7 @@ import { getPosMenuItems, upsertPosMenuItem } from '@/lib/posMenuStore';
 import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 import { getActiveBrandId, subscribeActiveBrandId } from '@/lib/activeBrand';
 
-const STORAGE_KEY = 'mthunzi.stockItems.v1';
+const STORAGE_KEY = 'mthunzi.stockItems.v2';
 
 function storageKeyForBrand(brandId: string | null) {
   return `${STORAGE_KEY}.${brandId ? String(brandId) : 'none'}`;
@@ -75,6 +75,14 @@ async function fetchFromDb() {
 
     const { data, error } = await supabase.from('stock_items').select('*').eq('brand_id', brandId);
     if (error) {
+      // Detect permission/RLS related errors and provide actionable guidance
+      const code = String(error.code ?? '');
+      const msg = String(error.message ?? '');
+      if (code === '42501' || /permission|forbid|forbidden/i.test(msg)) {
+        const guidance = `Permission denied fetching stock_items. Ensure the DB grants SELECT to the 'authenticated' role or disable RLS for this table. Run in Supabase SQL:\n\nGRANT SELECT ON public.stock_items TO authenticated;`;
+        console.warn('[stockStore] permission error fetching stock_items', guidance, error);
+        throw new Error(guidance);
+      }
       console.warn('Failed to fetch stock_items from Supabase', error);
       return;
     }

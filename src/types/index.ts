@@ -47,6 +47,7 @@ export interface StockItem {
 export interface StockIssue {
   id: string;
   date: string;
+  issueNo?: number;
   stockItemId: string;
   issueType: 'Wastage' | 'Expired' | 'Staff Meal' | 'Theft' | 'Damage';
   qtyIssued: number; // stored in base unit

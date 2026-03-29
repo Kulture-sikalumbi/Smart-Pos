@@ -852,7 +852,11 @@ export default function StockItems() {
                       onClick={e => {
                         e.stopPropagation();
                         setEditItemId(item.id);
-                        setEditForm({ ...item, itemsPerPack: (item as any).itemsPerPack ?? '' });
+                        setEditForm({
+                          ...item,
+                          itemsPerPack: (item as any).itemsPerPack ?? '',
+                          departmentId: item.departmentId ? String(item.departmentId) : '',
+                        });
                         setIsEditDialogOpen(true);
                       }}
                     >
@@ -947,6 +951,7 @@ export default function StockItems() {
                                 <div className="space-y-2">
                                   <Label htmlFor="edit-current">Current Cost</Label>
                                   <Input id="edit-current" type="number" step="0.01" value={editForm.currentCost} onChange={e => setEditForm(f => ({ ...f, currentCost: e.target.value }))} />
+                                  <div className="text-sm text-muted-foreground">You can edit unit price and other item fields here; stock qty is managed via GRV.</div>
                                 </div>
                               </div>
                               <div className="grid grid-cols-2 gap-4">
@@ -955,24 +960,27 @@ export default function StockItems() {
                                     const ut = String(editForm.unitType || '').toUpperCase();
                                     if (ut === 'KG' || ut === 'LTRS') {
                                       return (
-                                        <>
-                                          <Label htmlFor="edit-stock">Current Stock (Total {ut === 'KG' ? 'KG' : 'L'})</Label>
-                                          <Input id="edit-stock" type="number" step="0.01" placeholder="e.g., 50.00" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} />
-                                        </>
-                                      );
+                                          <>
+                                            <Label htmlFor="edit-stock">Current Stock (Total {ut === 'KG' ? 'KG' : 'L'})</Label>
+                                            <Input id="edit-stock" type="number" step="0.01" placeholder="e.g., 50.00" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} disabled />
+                                            <div className="text-sm text-muted-foreground">You can't edit qty (stock level) here — use GRV to change stock levels.</div>
+                                          </>
+                                        );
                                     }
                                     if (ut === 'PACK') {
                                       return (
                                         <>
                                           <Label htmlFor="edit-stock">Number of Packs</Label>
-                                          <Input id="edit-stock" type="number" step="1" placeholder="e.g., 10" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} />
+                                          <Input id="edit-stock" type="number" step="1" placeholder="e.g., 10" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} disabled />
+                                          <div className="text-sm text-muted-foreground">You can't edit qty (stock level) here — use GRV to change stock levels.</div>
                                         </>
                                       );
                                     }
                                     return (
-                                      <>
+                                        <>
                                         <Label htmlFor="edit-stock">Current Stock (Units)</Label>
-                                        <Input id="edit-stock" type="number" step="1" placeholder="e.g., 10" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} />
+                                        <Input id="edit-stock" type="number" step="1" placeholder="e.g., 10" value={String(editForm.currentStock ?? '')} onChange={e => setEditForm(f => ({ ...f, currentStock: e.target.value }))} disabled />
+                                        <div className="text-sm text-muted-foreground">You can't edit qty (stock level) here — use GRV to change stock levels.</div>
                                       </>
                                     );
                                   })()}

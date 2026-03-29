@@ -1,58 +1,63 @@
--- RPC: process_stock_issue
--- Atomically inserts stock_issues rows and decrements stock_items.current_stock.
--- Fails with 'Low Stock' if any line would result in negative current_stock.
-
-create or replace function public.process_stock_issue(
+CREATE OR REPLACE FUNCTION public.process_stock_issue(
+  p_stock_item_id uuid,
   p_brand_id uuid,
-  p_date date,
-  p_created_by text,
-  p_lines jsonb
-) returns void as $$
-declare
-  ln jsonb;
-  v_item_id uuid;
-  v_qty numeric;
-  v_cur numeric;
-begin
-  if p_lines is null then
-    return;
-  end if;
+  p_issue_type text,
+  p_qty_issued numeric,
+  p_unit_cost numeric,
+  p_total_value numeric,
+  p_notes text
+)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER -- Essential: allows the function to update stock even if the user lacks direct update permissions
+AS $$
+DECLARE
+    v_current_stock numeric;
+BEGIN
+    -- 1. Get current stock and LOCK the row to prevent other transactions from interfering
+    SELECT current_stock INTO v_current_stock
+    FROM public.stock_items
+    WHERE id = p_stock_item_id AND brand_id = p_brand_id
+    FOR UPDATE;
 
-  for ln in select * from jsonb_array_elements(p_lines) loop
-    v_item_id := (ln ->> 'stock_item_id')::uuid;
-    v_qty := (ln ->> 'qty_issued')::numeric;
+    -- 2. Verify existence
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'Item not found in inventory.';
+    END IF;
 
-    -- Lock the stock_items row for update to avoid races
-    select current_stock into v_cur from public.stock_items where id = v_item_id and brand_id = p_brand_id for update;
-    if v_cur is null then
-      raise exception 'Item not found';
-    end if;
+    -- 3. Prevent negative stock (Professional Integrity Check)
+    IF v_current_stock < p_qty_issued THEN
+        RAISE EXCEPTION 'Insufficient stock. Current: %, Requested: %', v_current_stock, p_qty_issued;
+    END IF;
 
-    if v_cur - v_qty < 0 then
-      raise exception 'Low Stock';
-    end if;
+    -- 4. Insert the Audit Entry into your stock_issues table
+    INSERT INTO public.stock_issues (
+        brand_id,
+        stock_item_id,
+        issue_type,
+        qty_issued,
+        unit_cost_at_time,
+        total_value_lost,
+        notes,
+        created_by
+    ) VALUES (
+        p_brand_id,
+        p_stock_item_id,
+        p_issue_type,
+        p_qty_issued,
+        p_unit_cost,
+        p_total_value,
+        p_notes,
+        auth.uid()
+    );
 
-    update public.stock_items
-    set current_stock = v_cur - v_qty,
-        updated_at = now()
-    where id = v_item_id and brand_id = p_brand_id;
+    -- 5. Atomic Update of the Inventory
+    UPDATE public.stock_items
+    SET current_stock = current_stock - p_qty_issued
+    WHERE id = p_stock_item_id AND brand_id = p_brand_id;
 
-    insert into public.stock_issues(
-      id, brand_id, stock_item_id, issue_type, qty_issued, unit_cost_at_time, total_value_lost, notes, created_by, created_at
-    ) values (
-      (ln ->> 'id')::uuid,
-      p_brand_id,
-      v_item_id,
-      ln ->> 'issue_type',
-      v_qty,
-      (ln ->> 'unit_cost_at_time')::numeric,
-      (ln ->> 'total_value_lost')::numeric,
-      ln ->> 'notes',
-      p_created_by,
-      now()
-    ) on conflict do nothing;
-  end loop;
-end;
-$$ language plpgsql security definer;
+END;
+$$;
 
-grant execute on function public.process_stock_issue(uuid, date, text, jsonb) to authenticated;
+-- Grant access to your authenticated users
+GRANT EXECUTE ON FUNCTION public.process_stock_issue TO authenticated;
