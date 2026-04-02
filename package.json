@@ -16,7 +16,8 @@
     "test:watch": "vitest",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
     "electron:build": "npm run build && electron-builder",
-    "electron:package": "npm run build && electron-builder --dir"
+    "electron:package": "npm run build && electron-builder --dir",
+    "electron:release": "npm run build && electron-builder --publish always"
   },
   "engines": {
     "node": ">=22.17.0 <25",
@@ -63,6 +64,7 @@
     "dexie": "^4.2.1",
     "dexie-react-hooks": "^4.2.0",
     "embla-carousel-react": "^8.6.0",
+    "electron-updater": "^6.8.3",
     "framer-motion": "^12.29.2",
     "input-otp": "^1.4.2",
     "jspdf": "^4.0.0",
@@ -123,6 +125,13 @@
     "appId": "com.mtlabs.rcdigital.profitmakerpos",
     "productName": "Profit Maker POS",
     "artifactName": "ProfitMakerPOS-${version}-${platform}-${arch}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "MTZ-Profit-maker-2-6v",
+        "repo": "Smart-Pos"
+      }
+    ],
     "files": [
       "dist/**",
       "electron/**"
