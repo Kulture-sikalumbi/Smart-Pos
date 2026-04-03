@@ -3,6 +3,9 @@
 
 name: Build and deploy Node.js app to Azure Web App - Profit-maker
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   push:
     branches:
@@ -19,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Node.js version
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: '22.x'
 
@@ -55,12 +58,22 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: node-app
-          path: .
+          path: ./artifact
+
+      - name: Normalize deployment package path
+        run: |
+          mkdir -p ./deploy-package
+          if [ -d ./artifact/deploy-package ]; then
+            cp -R ./artifact/deploy-package/. ./deploy-package/
+          else
+            cp -R ./artifact/. ./deploy-package/
+          fi
 
       - name: Verify deployment package
         run: |
           ls -la ./deploy-package
           test -f ./deploy-package/server.js
+          test -f ./deploy-package/dist/index.html
           test -f ./deploy-package/node_modules/express/package.json
       
       - name: Login to Azure
