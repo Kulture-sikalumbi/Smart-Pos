@@ -85,7 +85,7 @@ export default function POSTerminal() {
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
-      toast({ title: 'Online', description: 'Internet connection restored.', variant: 'success' });
+      toast({ title: 'Online', description: 'Internet connection restored.' });
     };
     const handleOffline = () => {
       setIsOnline(false);
@@ -906,7 +906,7 @@ export default function POSTerminal() {
   
   const handleSendToKitchen = async () => {
     if (!isOnline) {
-      toast({ title: 'No Internet', description: 'You are offline. Send-to-kitchen requests will sync when connection returns.', variant: 'warning' });
+      toast({ title: 'No Internet', description: 'You are offline. Send-to-kitchen requests will sync when connection returns.' });
     }
     try {
       await applyRecipeDeductionsOrThrow();
@@ -944,7 +944,7 @@ export default function POSTerminal() {
   
   const handlePaymentComplete = async (method: PaymentMethod) => {
     if (!isOnline) {
-      toast({ title: 'No Internet', description: 'You are offline. The payment order will be synced once online.', variant: 'warning' });
+      toast({ title: 'No Internet', description: 'You are offline. The payment order will be synced once online.' });
     }
 
     try {
@@ -1011,18 +1011,6 @@ export default function POSTerminal() {
     }
   };
   
-  if (isLoading) {
-    return (
-      <div className="h-screen p-3 pos-light flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-primary/60 border-opacity-30 mx-auto" />
-          <p className="mt-4 text-lg font-semibold">Loading menu & orders...</p>
-          <p className="text-sm text-muted-foreground">Please wait a moment while data is retrieved.</p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="h-screen p-3 pos-light">
       <div className="h-full rounded-2xl border bg-background overflow-auto lg:overflow-hidden overscroll-contain">
@@ -1597,7 +1585,7 @@ export default function POSTerminal() {
             {/* Menu Grid */}
             <ScrollArea className="flex-1">
               <div className="p-3">
-                {items.length === 0 ? (
+                {items.length === 0 && isLoading ? (
                   <div className="mb-3 rounded-lg border bg-muted/30 p-3 text-sm">
                     <div className="font-medium">Loading menu items...</div>
                     <div className="text-xs text-muted-foreground mt-1">
@@ -1609,6 +1597,16 @@ export default function POSTerminal() {
                       ))}
                     </div>
                   </div>
+                ) : items.length === 0 ? (
+                  <div className="mb-3 rounded-lg border bg-muted/30 p-3 text-sm">
+                    <div className="font-medium">No menu items available.</div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      Add items in POS Menu to start taking orders.
+                    </div>
+                    <div className="mt-2 flex gap-2">
+                      <Button size="sm" variant="outline" onClick={() => navigate('/app/pos/menu')}>Open POS Menu</Button>
+                    </div>
+                  </div>
                 ) : items.length === 1 ? (
                   <div className="mb-3 rounded-lg border bg-muted/30 p-3 text-sm">
                     <div className="font-medium">Only one menu item found.</div>
@@ -1616,7 +1614,7 @@ export default function POSTerminal() {
                       Add more items in POS Menu for a complete selection.
                     </div>
                     <div className="mt-2 flex gap-2">
-                      <Button size="sm" variant="outline" onClick={() => navigate('/pos/menu')}>Open POS Menu</Button>
+                      <Button size="sm" variant="outline" onClick={() => navigate('/app/pos/menu')}>Open POS Menu</Button>
                     </div>
                   </div>
                 ) : null}
