@@ -45,6 +45,55 @@ import AdvancedGAAP from "./pages/inventory/AdvancedGAAP";
 
 const queryClient = new QueryClient();
 
+type AppErrorBoundaryState = {
+  hasError: boolean;
+  message?: string;
+};
+
+class AppErrorBoundary extends React.Component<{ children: React.ReactNode }, AppErrorBoundaryState> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error: unknown): AppErrorBoundaryState {
+    return {
+      hasError: true,
+      message: error instanceof Error ? error.message : 'Unexpected application error',
+    };
+  }
+
+  componentDidCatch(error: unknown, info: React.ErrorInfo) {
+    console.error('AppErrorBoundary caught an error', error, info);
+  }
+
+  render() {
+    if (!this.state.hasError) return this.props.children;
+
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6">
+        <div className="w-full max-w-md rounded-xl border border-border bg-card p-6 text-card-foreground shadow-sm">
+          <h1 className="text-lg font-semibold">Something went wrong</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            The page hit an unexpected error. Reload to recover.
+          </p>
+          {this.state.message ? (
+            <p className="mt-3 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground break-words">
+              {this.state.message}
+            </p>
+          ) : null}
+          <div className="mt-4 flex gap-2">
+            <Button onClick={() => window.location.reload()}>Reload</Button>
+            <Button variant="outline" onClick={() => this.setState({ hasError: false, message: undefined })}>
+              Try Again
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
 const TransferQR = React.lazy(() => import("./pages/inventory/TransferQR"));
 const POSTerminal = React.lazy(() => import("./pages/pos/POSTerminal"));
 const TableManagement = React.lazy(() => import("./pages/pos/TableManagement"));
@@ -74,51 +123,53 @@ const App = () => {
       <BrandingProvider>
         <CurrencyProvider>
           <TooltipProvider>
-            <InstallPrompt />
-            <BrandPromptModal />
+            <AppErrorBoundary>
+              <InstallPrompt />
+              <BrandPromptModal />
               <Suspense fallback={<AppShellLoader />}>
-              <Routes>
-                <Route path="/" element={<Landing />} />
-                <Route path="/login" element={<Navigate to="/" replace />} />
-                <Route path="/company-settings" element={<Navigate to="/app/company-settings" replace />} />
-                <Route path="/auth/callback" element={<AuthCallback />} />
+                <Routes>
+                  <Route path="/" element={<Landing />} />
+                  <Route path="/login" element={<Navigate to="/" replace />} />
+                  <Route path="/company-settings" element={<Navigate to="/app/company-settings" replace />} />
+                  <Route path="/auth/callback" element={<AuthCallback />} />
 
-                <Route path="/app" element={<ProtectedRoute><MainLayout /></ProtectedRoute>}>
-                  <Route index element={<Dashboard />} />
-                  <Route path="inventory/stock-items" element={<StockItems />} />
-                  <Route path="inventory/stock-issues" element={<StockIssues />} />
-                  <Route path="inventory/stock-take" element={<StockTake />} />
-                  <Route path="inventory/advanced-gaap" element={<AdvancedGAAP />} />
-                  <Route path="inventory/transfer-qr" element={<TransferQR />} />
-                  <Route path="manufacturing/recipes" element={<Recipes />} />
-                  <Route path="manufacturing/production" element={<BatchProduction />} />
-                  <Route path="purchases" element={<Purchases />} />
-                  <Route path="staff" element={<Staff />} />
-                  <Route path="reports" element={<Reports />} />
-                  <Route path="intelligence" element={<IntelligenceWorkspace />} />
-                  <Route path="zra-tax-season" element={<ZRATaxSeason />} />
-                  <Route path="settings" element={<Settings />} />
-                  <Route path="company-settings" element={<CompanySettings />} />
-                  <Route path="tax-demo" element={<TaxEngineDemo />} />
-                  <Route path="audit-dashboard" element={<AuditDashboard />} />
-                  <Route path="security-demo" element={<SecurityDemo />} />
-                  <Route path="variance-demo" element={<ProfitProtectionDemo />} />
-                  <Route path="zra-invoice-demo" element={<ZRAInvoiceDemo />} />
-                  <Route path="report-share-demo" element={<ReportSharerDemo />} />
-                  <Route path="receipt-demo" element={<GlobalReceiptDemo />} />
-                  <Route path="pos" element={<POSTerminal />} />
-                  <Route path="pos/terminal" element={<POSTerminal />} />
-                  <Route path="pos/menu" element={<MenuManager />} />
-                  <Route path="pos/tables" element={<TableManagement />} />
-                  <Route path="pos/cash-up" element={<CashUp />} />
-                  <Route path="pos/kitchen" element={<KitchenDisplay />} />
-                  <Route path="self-order/:tableNo" element={<SelfOrder />} />
-                  <Route path="pos/table-qr" element={<TableQrCodes />} />
-                  <Route path="inventory/items" element={<StockItems />} />
-                </Route>
-                <Route path="*" element={<NotFound />} />
-              </Routes>
-            </Suspense>
+                  <Route path="/app" element={<ProtectedRoute><MainLayout /></ProtectedRoute>}>
+                    <Route index element={<Dashboard />} />
+                    <Route path="inventory/stock-items" element={<StockItems />} />
+                    <Route path="inventory/stock-issues" element={<StockIssues />} />
+                    <Route path="inventory/stock-take" element={<StockTake />} />
+                    <Route path="inventory/advanced-gaap" element={<AdvancedGAAP />} />
+                    <Route path="inventory/transfer-qr" element={<TransferQR />} />
+                    <Route path="manufacturing/recipes" element={<Recipes />} />
+                    <Route path="manufacturing/production" element={<BatchProduction />} />
+                    <Route path="purchases" element={<Purchases />} />
+                    <Route path="staff" element={<Staff />} />
+                    <Route path="reports" element={<Reports />} />
+                    <Route path="intelligence" element={<IntelligenceWorkspace />} />
+                    <Route path="zra-tax-season" element={<ZRATaxSeason />} />
+                    <Route path="settings" element={<Settings />} />
+                    <Route path="company-settings" element={<CompanySettings />} />
+                    <Route path="tax-demo" element={<TaxEngineDemo />} />
+                    <Route path="audit-dashboard" element={<AuditDashboard />} />
+                    <Route path="security-demo" element={<SecurityDemo />} />
+                    <Route path="variance-demo" element={<ProfitProtectionDemo />} />
+                    <Route path="zra-invoice-demo" element={<ZRAInvoiceDemo />} />
+                    <Route path="report-share-demo" element={<ReportSharerDemo />} />
+                    <Route path="receipt-demo" element={<GlobalReceiptDemo />} />
+                    <Route path="pos" element={<POSTerminal />} />
+                    <Route path="pos/terminal" element={<POSTerminal />} />
+                    <Route path="pos/menu" element={<MenuManager />} />
+                    <Route path="pos/tables" element={<TableManagement />} />
+                    <Route path="pos/cash-up" element={<CashUp />} />
+                    <Route path="pos/kitchen" element={<KitchenDisplay />} />
+                    <Route path="self-order/:tableNo" element={<SelfOrder />} />
+                    <Route path="pos/table-qr" element={<TableQrCodes />} />
+                    <Route path="inventory/items" element={<StockItems />} />
+                  </Route>
+                  <Route path="*" element={<NotFound />} />
+                </Routes>
+              </Suspense>
+            </AppErrorBoundary>
           </TooltipProvider>
         </CurrencyProvider>
       </BrandingProvider>
