@@ -717,14 +717,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         };
       }
 
-      // Fetch brand (public select policy)
-      const { data: brandRow, error: brandErr } = await withTimeout(
-        supabase.from('brands').select('*').eq('id', row.brand_id).maybeSingle(),
-        15000
-      );
-      if (brandErr || !brandRow) {
-        return { ok: false, message: 'Your staff account is valid, but the brand could not be loaded.' };
+      // Fetch brand if possible, but do not block staff login if the lookup is not available.
+      // Some deployments restrict direct brand selects; in that case we still let the staff user in
+      // with a minimal brand stub so the POS can operate.
+      let brandRow: any = null;
+      try {
+        const res = await withTimeout(
+          supabase.from('brands').select('*').eq('id', row.brand_id).maybeSingle(),
+          15000
+        );
+        brandRow = (res as any)?.data ?? null;
+        const brandErr = (res as any)?.error ?? null;
+        if (brandErr) {
+          console.warn('staffLogin brand lookup warning', brandErr);
+        }
+      } catch (e) {
+        console.warn('staffLogin brand lookup exception', e);
       }
+
+      const nextBrand = brandRow ?? {
+        id: String(row.brand_id),
+        name: String(row.name ?? 'Brand'),
+        primary_color_hex: null,
+        is_active: true,
+      };
 
       const staffUser: BrandStaffUser = {
         id: String(row.id),
@@ -739,13 +755,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       setAccountUser(null);
       setUser(staffUser);
-      setBrand(brandRow);
-      setBrandIsActive(resolveBrandIsActive(brandRow));
+      setBrand(nextBrand);
+      setBrandIsActive(resolveBrandIsActive(nextBrand));
       setOperatorPin(cleanPin);
       setLoading(false);
       setProfileReady(true);
 
-      saveStaffSession({ v: 1, staff: staffUser, brand: brandRow, cachedAt: Date.now() });
+      saveStaffSession({ v: 1, staff: staffUser, brand: nextBrand, cachedAt: Date.now() });
 
       return { ok: true, role: staffUser.role };
     } catch (e: any) {
@@ -777,19 +793,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async () => {
     try {
-      await supabase?.auth.signOut();
-    } finally {
-      // Ensure local state/caches are cleared even if signOut fails.
+      // Clear local auth state immediately so the UI returns to the landing page
+      // without waiting for the network round trip to Supabase.
       clearAuthRelatedAppCaches();
       setActiveUserId(null);
+      setUser(null);
+      setAccountUser(null);
+      setBrand(null);
+      setBrandIsActive(true);
+      setAllUsers([]);
+      setOperatorPin(null);
+      clearStaffSession();
+
+      // Sign out remotely in the background.
+      void supabase?.auth.signOut().catch((err) => {
+        console.warn('logout signOut warning', err);
+      });
+    } finally {
+      // no-op; state is already cleared above
     }
-    setUser(null);
-    setAccountUser(null);
-    setBrand(null);
-    setBrandIsActive(true);
-    setAllUsers([]);
-    setOperatorPin(null);
-    clearStaffSession();
   };
 
   // Staff admin CRUD helpers
@@ -873,16 +895,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const refreshProfile = async () => {
-    setLoading(true);
-    setProfileReady(false);
     try {
       const { data } = await supabase.auth.getSession();
       const authUser = (data as any)?.session?.user ?? null;
-      if (authUser) await fetchProfileAndBrand(authUser.id);
-      else setLoading(false);
+      if (authUser) {
+        await fetchProfileAndBrand(authUser.id);
+      } else {
+        setProfileReady(true);
+      }
     } catch (err) {
       console.error('refreshProfile error', err);
-      setLoading(false);
       setProfileReady(true);
     }
   };

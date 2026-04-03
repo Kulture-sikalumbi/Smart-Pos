@@ -157,6 +157,8 @@ export default function POSTerminal() {
   const [showTableSelect, setShowTableSelect] = useState(false);
   const [showHeldOrders, setShowHeldOrders] = useState(false);
   const [showPaymentRequests, setShowPaymentRequests] = useState(false);
+  const [sendKitchenBusy, setSendKitchenBusy] = useState(false);
+  const [logoutBusy, setLogoutBusy] = useState(false);
 
   const [showAdminGate, setShowAdminGate] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -228,6 +230,15 @@ export default function POSTerminal() {
   };
 
   const getEffectiveCashierPin = () => (operatorPin ?? cashierPin).trim();
+
+  const requestLogout = () => {
+    if (logoutBusy) return;
+    setLogoutBusy(true);
+    navigate('/');
+    void logout().catch((err) => {
+      console.warn('logout failed', err);
+    });
+  };
 
   const startShift = async (amount: number) => {
     if (!supabase) {
@@ -905,6 +916,8 @@ export default function POSTerminal() {
   };
   
   const handleSendToKitchen = async () => {
+    if (sendKitchenBusy) return;
+    setSendKitchenBusy(true);
     if (!isOnline) {
       toast({ title: 'No Internet', description: 'You are offline. Send-to-kitchen requests will sync when connection returns.' });
     }
@@ -928,9 +941,10 @@ export default function POSTerminal() {
 
       // debug: removed on-screen merged items
 
-      // Keep the sent ticket on screen so cashier can proceed to payment.
-      // The "Send to Kitchen" button remains disabled once all lines are sent.
-      loadOrderToTerminal(saved);
+      // Keep the current ticket visible so the cashier can continue reviewing it
+      // and only lock the kitchen-sent lines by marking them as sent.
+      setOrderItems((prev) => prev.map((item) => ({ ...item, sentToKitchen: true })));
+      setActiveOrderId(saved.id);
 
       // Note: we intentionally do NOT call `sendOrderPayload` here because
       // `upsertOrder` already triggers remote sync (via `sendOrderToSupabase`).
@@ -939,6 +953,8 @@ export default function POSTerminal() {
       // server upsert/insert reliably and is preferred.
     } catch (e) {
       showDeductionError(e);
+    } finally {
+      setSendKitchenBusy(false);
     }
   };
   
@@ -1046,13 +1062,10 @@ export default function POSTerminal() {
                         setShowEndShift(true);
                         return;
                       }
-                      void (async () => {
-                        await logout();
-                        navigate('/');
-                      })();
+                      requestLogout();
                     }}>
                       <LogOut className="h-4 w-4 mr-2" />
-                      Logout
+                      {logoutBusy ? 'Logging out…' : 'Logout'}
                     </Button>
                   </div>
                 </PopoverContent>
@@ -1489,14 +1502,11 @@ export default function POSTerminal() {
                         variant="secondary"
                         onClick={() => {
                           // Allow logout without ending shift (in case of mistakes / handover)
-                          void (async () => {
-                            await logout();
-                            navigate('/');
-                          })();
+                          requestLogout();
                         }}
-                        disabled={shiftBusy}
+                        disabled={shiftBusy || logoutBusy}
                       >
-                        Logout Only
+                        {logoutBusy ? 'Logging out…' : 'Logout Only'}
                       </Button>
                       <Button
                         type="button"
@@ -1541,14 +1551,13 @@ export default function POSTerminal() {
                             void (async () => {
                               const ok = await endShift(amount);
                               if (ok) {
-                                await logout();
-                                navigate('/');
+                                requestLogout();
                               }
                             })();
                           }}
-                          disabled={shiftBusy}
+                          disabled={shiftBusy || logoutBusy}
                         >
-                          {shiftBusy ? 'Ending…' : 'Yes, End & Logout'}
+                          {shiftBusy ? 'Ending…' : logoutBusy ? 'Logging out…' : 'Yes, End & Logout'}
                         </Button>
                       </div>
                     </div>
@@ -1839,10 +1848,15 @@ export default function POSTerminal() {
             <Button
               variant="outline"
               className="w-full"
-              disabled={orderItems.length === 0 || orderItems.every((i) => i.sentToKitchen)}
+              disabled={sendKitchenBusy || orderItems.length === 0 || orderItems.every((i) => i.sentToKitchen)}
               onClick={handleSendToKitchen}
             >
-              <Send className="h-4 w-4 mr-2" /> Send to Kitchen
+              {sendKitchenBusy ? (
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Send className="h-4 w-4 mr-2" />
+              )}
+              {sendKitchenBusy ? 'Sending...' : 'Send to Kitchen'}
             </Button>
           </div>
 

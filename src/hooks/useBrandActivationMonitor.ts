@@ -64,17 +64,17 @@ export function useBrandActivationMonitor() {
 
     channelRef.current = subscription;
 
-    // Fallback: Periodic check every 5 seconds (for connection issues)
+    // Fallback: Periodic check every 60 seconds (for connection issues)
     const interval = setInterval(() => {
       const now = Date.now();
-      if (now - lastCheckRef.current > 5000) {
+      if (now - lastCheckRef.current > 60_000) {
         lastCheckRef.current = now;
         console.log('[BrandActivationMonitor] Periodic check...');
         if (refreshProfile) {
           void refreshProfile();
         }
       }
-    }, 5000);
+    }, 60_000);
 
     return () => {
       clearInterval(interval);
