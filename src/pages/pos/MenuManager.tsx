@@ -514,15 +514,52 @@ const MenuManager: React.FC = () => {
                 </PopoverTrigger>
                 <PopoverContent className="w-full p-0">
                   <Command>
-                    <CommandInput
-                      placeholder="Search stock items..."
-                      value={form.name || ''}
-                      onValueChange={(value) => {
-                        setForm({ ...form, name: value });
-                        setStockSuggestionsOpen(true);
-                      }}
-                    />
+                    <div className="flex items-center gap-2 px-2 py-2">
+                      <CommandInput
+                        placeholder="Search stock items..."
+                        value={form.name || ''}
+                        onValueChange={(value) => {
+                          setForm({ ...form, name: value });
+                          setStockSuggestionsOpen(true);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            setStockSuggestionsOpen(false);
+                          }
+                        }}
+                        className="flex-1"
+                      />
+                      <Button size="sm" variant="ghost" onClick={() => {
+                        // Confirm custom name via button
+                        setSelectedStockId(undefined);
+                        setIsRetail(false);
+                        setStockSuggestionsOpen(false);
+                      }}>
+                        <Check className="h-4 w-4" />
+                      </Button>
+                    </div>
                     <CommandEmpty>No stock items found.</CommandEmpty>
+                    {/* Allow explicit adding of a custom name while typing */}
+                    {(String(form.name || '').trim().length > 0) && (
+                      <CommandGroup>
+                        <CommandItem
+                          key="__add_custom__"
+                          value={String(form.name || '')}
+                          onSelect={() => {
+                            // Keep the typed name, close suggestions and ensure it's not linked to stock
+                            setSelectedStockId(undefined);
+                            setIsRetail(false);
+                            setStockSuggestionsOpen(false);
+                          }}
+                        >
+                          <div className="flex flex-col">
+                            <span className="font-medium">Add "{String(form.name || '')}"</span>
+                            <span className="text-xs text-muted-foreground">Use custom name as new menu item</span>
+                          </div>
+                        </CommandItem>
+                      </CommandGroup>
+                    )}
                     <CommandGroup>
                       {stockItems
                         .filter(s => {
