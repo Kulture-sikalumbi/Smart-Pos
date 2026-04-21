@@ -16,22 +16,35 @@ function setupAutoUpdates() {
 
   autoUpdater.on('update-available', (info) => {
     console.info('Update available', { version: info.version });
+    try { mainWindow?.webContents.send('update-available', info); } catch {}
   });
 
   autoUpdater.on('update-not-available', () => {
     console.info('No updates available');
+    try { mainWindow?.webContents.send('update-not-available'); } catch {}
   });
 
   autoUpdater.on('update-downloaded', (info) => {
     console.info('Update downloaded and will install on quit', { version: info.version });
+    try { mainWindow?.webContents.send('update-downloaded', info); } catch {}
   });
 
   autoUpdater.on('error', (error) => {
     console.error('Auto update error', error);
+    try { mainWindow?.webContents.send('update-error', String(error)); } catch {}
   });
 
   autoUpdater.checkForUpdatesAndNotify().catch((error) => {
     console.error('Initial update check failed', error);
+  });
+
+  // Allow renderer to request immediate install of a downloaded update
+  ipcMain.on('install-update', () => {
+    try {
+      autoUpdater.quitAndInstall();
+    } catch (err) {
+      console.error('Failed to quit and install update', err);
+    }
   });
 
   setInterval(() => {

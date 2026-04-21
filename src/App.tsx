@@ -11,6 +11,10 @@ import { BrandActivationGuard } from "./components/common/BrandActivationGuard";
 import { useAuth } from '@/contexts/AuthContext';
 import { ProtectedRoute } from './components/common/ProtectedRoute';
 import React, { Suspense } from "react";
+import { useEffect } from 'react';
+import { toast } from '@/hooks/use-toast';
+import { ToastAction } from '@/components/ui/toast';
+import { Button } from '@/components/ui/button';
 import { InstallPrompt } from "@/components/common/InstallPrompt";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -113,6 +117,36 @@ function AppShellLoader() {
 
 const App = () => {
   const { loading } = useAuth();
+  useEffect(() => {
+    const e = (window as any).electron;
+    if (!e) return;
+
+    try {
+      e.on && e.on('update-available', (info: any) => {
+        try { toast({ title: 'Update available', description: 'Downloading update…' }); } catch {}
+      });
+
+      e.on && e.on('update-downloaded', (info: any) => {
+        try {
+          toast({
+            title: 'Update ready',
+            description: `Version ${info?.version ?? ''} downloaded. Restart to apply.`,
+            action: (
+              <ToastAction asChild>
+                <Button onClick={() => { try { e.installUpdate(); } catch {} }}>Restart</Button>
+              </ToastAction>
+            ),
+          });
+        } catch {}
+      });
+
+      e.on && e.on('update-error', (err: any) => {
+        try { toast({ title: 'Update error', description: String(err), variant: 'destructive' }); } catch {}
+      });
+    } catch (err) {
+      // ignore
+    }
+  }, []);
   if (loading) return (
     <div className="flex items-center justify-center min-h-screen">
       <div className="animate-spin rounded-full h-12 w-12 border-t-4 border-b-4 border-primary/60 border-opacity-30" />
