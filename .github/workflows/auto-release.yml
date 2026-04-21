@@ -1,0 +1,32 @@
+name: Auto Release (build & publish)
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-and-publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web
+        run: npm run build
+
+      - name: Build and publish Electron installer
+        run: npm run electron:build -- --publish=always
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
