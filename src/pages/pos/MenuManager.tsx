@@ -154,8 +154,8 @@ const MenuManager: React.FC = () => {
 
   const handleSave = async () => {
     // Validate before attempting save
-    if (validationErrors.length) {
-      setValidationMessage(validationErrors.join('\n'));
+    if (errs.length) {
+      setValidationMessage(errs.join('\n'));
       setValidationModalOpen(true);
       return;
     }
