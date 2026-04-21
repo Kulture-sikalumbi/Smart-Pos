@@ -1,7 +1,7 @@
 {
   "name": "profit-maker-pos",
   "private": true,
-  "version": "0.0.4",
+  "version": "0.0.5",
   "type": "module",
   "description": "Profit Maker POS - modern retail/restaraunt point-of-sale",
   "author": "MTLabs & Rc Digital",
