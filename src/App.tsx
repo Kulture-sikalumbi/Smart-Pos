@@ -16,7 +16,6 @@ import { ToastAction } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
 import { InstallPrompt } from "@/components/common/InstallPrompt";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
 
 import Dashboard from "./pages/Dashboard";
