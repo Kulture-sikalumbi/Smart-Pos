@@ -88,7 +88,7 @@ export default function Landing() {
 
               {!isNativeApp && (
                 <a
-                  href="https://github.com/Kulture-sikalumbi/Smart-Pos/releases/latest/download/ProfitMakerPOS-0.0.3-win32-x64.exe"
+                  href="https://github.com/Kulture-sikalumbi/Smart-Pos/releases/latest/download/ProfitMakerPOS-0.0.5-win32-x64.exe"
                   target="_blank"
                   rel="noreferrer"
                   className="rounded-lg bg-white px-8 py-3 text-sm font-semibold text-black shadow-lg transition hover:bg-gray-100"
