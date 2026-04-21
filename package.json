@@ -1,7 +1,7 @@
 {
   "name": "profit-maker-pos",
   "private": true,
-  "version": "0.0.2",
+  "version": "0.0.3",
   "type": "module",
   "description": "Profit Maker POS - modern retail/restaraunt point-of-sale",
   "author": "MTLabs & Rc Digital",
@@ -131,7 +131,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "MTZ-Profit-maker-2-6v",
+        "owner": "Kulture-sikalumbi",
         "repo": "Smart-Pos"
       }
     ],
