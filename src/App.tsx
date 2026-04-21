@@ -10,13 +10,12 @@ import { RoleGateway } from "./components/common/RoleGateway";
 import { BrandActivationGuard } from "./components/common/BrandActivationGuard";
 import { useAuth } from '@/contexts/AuthContext';
 import { ProtectedRoute } from './components/common/ProtectedRoute';
-import React, { Suspense } from "react";
-import { useEffect } from 'react';
+import React, { Suspense, useEffect, useState, useRef } from "react";
 import { toast } from '@/hooks/use-toast';
 import { ToastAction } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
 import { InstallPrompt } from "@/components/common/InstallPrompt";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { useNavigate } from 'react-router-dom';
 
@@ -117,6 +116,11 @@ function AppShellLoader() {
 
 const App = () => {
   const { loading } = useAuth();
+  const [updateInfo, setUpdateInfo] = useState<any | null>(null);
+  const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  const [countdown, setCountdown] = useState(15);
+  const countdownRef = useRef<number | null>(null);
+
   useEffect(() => {
     const e = (window as any).electron;
     if (!e) return;
@@ -128,15 +132,27 @@ const App = () => {
 
       e.on && e.on('update-downloaded', (info: any) => {
         try {
-          toast({
-            title: 'Update ready',
-            description: `Version ${info?.version ?? ''} downloaded. Restart to apply.`,
-            action: (
-              <ToastAction asChild>
-                <Button onClick={() => { try { e.installUpdate(); } catch {} }}>Restart</Button>
-              </ToastAction>
-            ),
-          });
+          // Show toast and modal with non-postponable countdown
+          toast({ title: 'Update ready', description: `Version ${info?.version ?? ''} downloaded. Restarting shortly.` });
+          setUpdateInfo(info);
+          setCountdown(15);
+          setUpdateModalOpen(true);
+
+          // start countdown
+          if (countdownRef.current) {
+            clearInterval(countdownRef.current as unknown as number);
+            countdownRef.current = null;
+          }
+          countdownRef.current = window.setInterval(() => {
+            setCountdown((c) => {
+              if (c <= 1) {
+                try { e.installUpdate(); } catch {}
+                if (countdownRef.current) { clearInterval(countdownRef.current as unknown as number); countdownRef.current = null; }
+                return 0;
+              }
+              return c - 1;
+            });
+          }, 1000) as unknown as number;
         } catch {}
       });
 
@@ -146,6 +162,10 @@ const App = () => {
     } catch (err) {
       // ignore
     }
+
+    return () => {
+      if (countdownRef.current) { clearInterval(countdownRef.current as unknown as number); countdownRef.current = null; }
+    };
   }, []);
   if (loading) return (
     <div className="flex items-center justify-center min-h-screen">
@@ -161,6 +181,7 @@ const App = () => {
             <AppErrorBoundary>
               <InstallPrompt />
               <BrandPromptModal />
+              <UpdateModal open={updateModalOpen} onOpenChange={setUpdateModalOpen} info={updateInfo} countdown={countdown} />
               <BrandActivationGuard />
               <Suspense fallback={<AppShellLoader />}>
                 <Routes>
@@ -240,6 +261,29 @@ function BrandPromptModal() {
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="outline" onClick={() => { setOpen(false); setDismissed(true); }}>Remind me later</Button>
           <Button onClick={() => { setOpen(false); navigate('/app/company-settings'); }}>Create brand</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function UpdateModal({ open, onOpenChange, info, countdown }: { open: boolean; onOpenChange: (o: boolean) => void; info: any; countdown: number }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Update ready</DialogTitle>
+          <DialogDescription>
+            A new update (version {info?.version ?? ''}) has been downloaded. The app will restart in {countdown} second{countdown === 1 ? '' : 's'} to apply the update. Please save your work — your data and progress will be preserved.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button variant="outline" onClick={() => { /* intentionally do not allow postponing */ }}>
+            Save and restart now
+          </Button>
+          <Button onClick={() => { try { (window as any).electron?.installUpdate(); } catch {} }}>
+            Restart now ({countdown})
+          </Button>
         </div>
       </DialogContent>
     </Dialog>
