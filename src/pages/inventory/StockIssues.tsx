@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useSyncExternalStore, useEffect } from 'react';
-import { ArrowRight, Calendar, Check, ChevronsUpDown, Plus, Search } from 'lucide-react';
+import { AlertTriangle, ArrowLeftRight, ArrowRight, Calendar, Check, ChevronsUpDown, Plus, Search } from 'lucide-react';
 
 import { PageHeader, DataTableWrapper, NumericCell } from '@/components/common/PageComponents';
 import { Button } from '@/components/ui/button';
@@ -57,7 +57,7 @@ type DraftIssueLine = {
   stockItemId: string;
   qty: string; // user-entered qty in inputUnit
   inputUnit?: string; // e.g., 'kg','g','l','ml','each','pack'
-  issueType?: 'Wastage' | 'Expired' | 'Staff Meal' | 'Theft' | 'Damage';
+  issueType?: 'Wastage' | 'Expired' | 'Staff Meal' | 'Theft' | 'Damage' | 'Manufacturing' | 'Sale';
   notes?: string;
 };
 
@@ -136,6 +136,7 @@ export default function StockIssues() {
 
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const submitLockRef = React.useRef(false);
   const [issueDate, setIssueDate] = useState<string>(dateKeyLocal(new Date()));
   const [createdBy, setCreatedBy] = useState('System');
   const { user: authUser, allUsers } = useAuth();
@@ -156,7 +157,7 @@ export default function StockIssues() {
   const [search, setSearch] = useState('');
 
   const [draftLines, setDraftLines] = useState<DraftIssueLine[]>(() => [
-    { id: `dl-${crypto.randomUUID()}`, stockItemId: '', qty: '', inputUnit: undefined, issueType: 'Wastage', notes: '' },
+    { id: `dl-${crypto.randomUUID()}`, stockItemId: '', qty: '', inputUnit: undefined, issueType: 'Sale', notes: '' },
   ]);
 
   const storeItems = useMemo(() => {
@@ -207,6 +208,10 @@ export default function StockIssues() {
 
     return round2(qty);
   }
+
+  const isTransferIssueType = (t?: DraftIssueLine['issueType']) => t === 'Manufacturing' || t === 'Sale';
+  const isLossIssueType = (t?: DraftIssueLine['issueType']) =>
+    t === 'Wastage' || t === 'Expired' || t === 'Staff Meal' || t === 'Theft' || t === 'Damage';
 
   const validated = useMemo(() => {
     const eps = 1e-9;
@@ -298,7 +303,7 @@ export default function StockIssues() {
   }, [issues, search, userNameById]);
 
   function resetDialog() {
-    setDraftLines([{ id: `dl-${crypto.randomUUID()}`, stockItemId: '', qty: '', inputUnit: undefined, issueType: 'Wastage', notes: '' }]);
+    setDraftLines([{ id: `dl-${crypto.randomUUID()}`, stockItemId: '', qty: '', inputUnit: undefined, issueType: 'Sale', notes: '' }]);
     setCreatedBy('System');
     setIssueDate(dateKeyLocal(new Date()));
   }
@@ -309,7 +314,7 @@ export default function StockIssues() {
   }, []);
 
   function addLine() {
-    setDraftLines((prev) => [...prev, { id: `dl-${crypto.randomUUID()}`, stockItemId: '', qty: '', inputUnit: undefined, issueType: 'Wastage', notes: '' }]);
+    setDraftLines((prev) => [...prev, { id: `dl-${crypto.randomUUID()}`, stockItemId: '', qty: '', inputUnit: undefined, issueType: 'Sale', notes: '' }]);
   }
 
   function removeLine(id: string) {
@@ -318,6 +323,8 @@ export default function StockIssues() {
 
   async function confirmIssue() {
     if (!validated.canConfirm) return;
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
     const brandId = getActiveBrandId();
     const payloadLines = validated.validLines.map((l: any) => {
       const unitCost = l.item?.currentCost ?? 0;
@@ -365,6 +372,7 @@ export default function StockIssues() {
       }
     } finally {
       setIsSaving(false);
+      submitLockRef.current = false;
     }
   }
 
@@ -467,11 +475,13 @@ export default function StockIssues() {
 
                               <div className="space-y-2">
                                 <Label>Issue Type</Label>
-                                <Select value={l.issueType ?? 'Wastage'} onValueChange={(v) => setDraftLines((prev) => prev.map((x) => (x.id === l.id ? { ...x, issueType: v as any } : x)))}>
+                                <Select value={l.issueType ?? 'Sale'} onValueChange={(v) => setDraftLines((prev) => prev.map((x) => (x.id === l.id ? { ...x, issueType: v as any } : x)))}>
                                   <SelectTrigger className={cn('h-9 w-full', invalid && 'border-destructive')}>
                                     <SelectValue />
                                   </SelectTrigger>
                                   <SelectContent>
+                                    <SelectItem value="Sale">Transfer to Sales (ready to sell)</SelectItem>
+                                    <SelectItem value="Manufacturing">Transfer to Manufacturing</SelectItem>
                                     <SelectItem value="Wastage">Wastage</SelectItem>
                                     <SelectItem value="Expired">Expired</SelectItem>
                                     <SelectItem value="Staff Meal">Staff Meal</SelectItem>
@@ -479,6 +489,22 @@ export default function StockIssues() {
                                     <SelectItem value="Damage">Damage</SelectItem>
                                   </SelectContent>
                                 </Select>
+
+                                {isTransferIssueType(l.issueType) ? (
+                                  <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-2 text-xs text-emerald-800">
+                                    <ArrowLeftRight className="h-4 w-4" />
+                                    <span>
+                                      Transfer: stock will be moved to the Front Office, not deleted.
+                                    </span>
+                                  </div>
+                                ) : isLossIssueType(l.issueType) ? (
+                                  <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
+                                    <AlertTriangle className="h-4 w-4" />
+                                    <span>
+                                      Loss: this will reduce Main Store stock (not a transfer).
+                                    </span>
+                                  </div>
+                                ) : null}
                               </div>
                             </div>
 
@@ -570,6 +596,7 @@ export default function StockIssues() {
                   Cancel
                 </Button>
                 <Button
+                  type="button"
                   onClick={confirmIssue}
                   disabled={!validated.canConfirm || isSaving || !currentUserId}
                   aria-busy={isSaving}

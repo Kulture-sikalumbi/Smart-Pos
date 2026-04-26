@@ -42,7 +42,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 import { StockItem, DepartmentId, UnitType } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
-import { subscribeStockItems, getStockItemsSnapshot } from '@/lib/stockStore';
+import { refreshStockItems, subscribeStockItems, getStockItemsSnapshot, subscribeToRealtimeStockItems } from '@/lib/stockStore';
 import { getCategoriesSnapshot, refreshCategories, subscribeCategories } from '@/lib/categoriesStore';
 import { getSuppliersSnapshot, refreshSuppliers, subscribeSuppliers } from '@/lib/suppliersStore';
 export default function StockItems() {
@@ -81,6 +81,33 @@ export default function StockItems() {
 
   const { hasPermission, brand, user } = useAuth();
   const activeBrandId = String((brand as any)?.id ?? (user as any)?.brand_id ?? '');
+
+  // Keep the list fresh: fetch on mount/brand change and subscribe to realtime updates.
+  useEffect(() => {
+    if (!activeBrandId) return;
+    void refreshStockItems();
+    const unsubscribeRealtime = subscribeToRealtimeStockItems();
+    const onVisibilityOrFocus = () => {
+      if (!activeBrandId) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void refreshStockItems();
+    };
+    if (typeof window !== 'undefined') window.addEventListener('focus', onVisibilityOrFocus);
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibilityOrFocus);
+    return () => {
+      try {
+        unsubscribeRealtime?.();
+      } catch {
+        // ignore
+      }
+      try {
+        if (typeof window !== 'undefined') window.removeEventListener('focus', onVisibilityOrFocus);
+        if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibilityOrFocus);
+      } catch {
+        // ignore
+      }
+    };
+  }, [activeBrandId]);
 
   const formatSupabaseError = (err: unknown) => {
     const anyErr = err as any;

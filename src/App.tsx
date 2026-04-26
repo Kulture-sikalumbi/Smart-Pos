@@ -22,6 +22,7 @@ import Dashboard from "./pages/Dashboard";
 import StockItems from "./pages/inventory/StockItems";
 import StockIssues from "./pages/inventory/StockIssues";
 import StockTake from "./pages/inventory/StockTake";
+import FrontOfficeStock from "./pages/inventory/FrontOfficeStock";
 import Recipes from "./pages/manufacturing/Recipes";
 import BatchProduction from "./pages/manufacturing/BatchProduction";
 import Purchases from "./pages/Purchases";
@@ -194,6 +195,7 @@ const App = () => {
                     <Route path="inventory/stock-items" element={<StockItems />} />
                     <Route path="inventory/stock-issues" element={<StockIssues />} />
                     <Route path="inventory/stock-take" element={<StockTake />} />
+                    <Route path="inventory/front-office-stock" element={<FrontOfficeStock />} />
                     <Route path="inventory/advanced-gaap" element={<AdvancedGAAP />} />
                     <Route path="inventory/transfer-qr" element={<TransferQR />} />
                     <Route path="manufacturing/recipes" element={<Recipes />} />

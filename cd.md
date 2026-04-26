@@ -1,35 +1,73 @@
-"I need to refactor my Dashboard.tsx and its related stores (orderStore.ts, stockStore.ts, dashboardMetrics.ts) to be Real-Time and Server-Side Aggregated. Currently, the dashboard is stale because it relies on local storage and manual fetches that don't trigger when other devices make changes.
+"I have a Supabase-backed inventory system that is currently incomplete.
 
-Please perform the following steps:
+The Situation:
+I have a stock_items table (Main Store/Back Office) and a stock_issues table (Movement Journal). Currently, when I 'Issue' stock, it only subtracts the quantity from the stock_items table. This logic is insufficient because it treats every issue as a 'loss' rather than a 'transfer' to the front-of-house operations.
 
-1. Database Layer (Postgres RPC)
-Create a PostgreSQL function named get_dashboard_stats(p_brand_id uuid, p_start_date date, p_end_date date).
+The Goal:
+I need to implement a Transfer Logic that moves stock from the Main Store to a new table called front_stock.
 
-It should return a jsonb object containing: total_revenue, order_count, total_expenses, low_stock_count, and top_selling_items.
+The Technical Requirements:
 
-This ensures the database does the heavy math, preventing the browser from downloading thousands of rows just to show a single total.
+New Destination: I have created a front_stock table with: id, brand_id, item_id, location_tag (text), and quantity.
 
-2. Store Layer (Real-Time Subscription)
-In orderStore.ts, stockStore.ts, and expenseStore.ts, implement a Supabase Realtime Channel.
+Update the Bridge: Modify the trigger function stock_issues_decrement_stock() (on the stock_issues table) to handle two new types of movements:
 
-Add a subscribeToChanges(brandId: string) function to each store.
+'Manufacturing': If NEW.issue_type is this, subtract from stock_items (existing) AND UPSERT into front_stock with location_tag = 'MANUFACTURING'.
 
-Use supabase.channel().on('postgres_changes', ...) to listen for INSERT, UPDATE, or DELETE events filtered by brand_id.
+'Sale': If NEW.issue_type is this, subtract from stock_items (existing) AND UPSERT into front_stock with location_tag = 'SALE'.
 
-When a change is detected, the listener must automatically trigger fetchFromDb() to refresh the local state and notify the Dashboard.
+The Logic: Use the brand_id and item_id for the UPSERT. If the record exists in front_stock for that location, increment the quantity. If not, create it.
 
-3. Metrics Refactor (dashboardMetrics.ts)
-Refactor the metrics logic to prioritize the results from the new get_dashboard_stats RPC.
+Security: Ensure all operations respect the brand_id.
 
-Ensure that the 'Today' calculation uses a standardized date format (YYYY-MM-DD) to avoid timezone discrepancies between the client and the database.
+Please provide the SQL for the updated trigger function and the ALTER TABLE statement for the stock_issues check constraint to include these new types."
 
-4. UI Layer (Dashboard.tsx)
-In the useEffect hook, initialize the Real-Time subscriptions for all relevant stores when the component mounts.
+have a specific setup for my Inventory System. I store stock in the Highest Unit (e.g., 500g is stored as 0.5kg). My conversion logic is currently handled in the UI.
 
-Ensure proper cleanup (supabase.removeChannel) in the useEffect return.
+The Task: > Update the stock_issues_decrement_stock() trigger function.
 
-Replace the local JS calculations for KPI cards with the data returned from the get_dashboard_stats RPC.
+The Requirements:
 
-Add a 'Live' indicator or a 'Last Updated' timestamp to the UI so the user knows the data is syncing in real-time.
+When a row is inserted into stock_issues, it will already contain the qty_issued in the correct unit (calculated by my UI).
 
-Goal: When I place an order on a phone, the Dashboard on my laptop must update the 'Total Revenue' card instantly without a manual refresh."
+The function must subtract this from stock_items.current_stock.
+
+Then, it must UPSERT this into front_stock.
+
+Crucial: You must also copy the unit from the stock_items table (or the stock_issues row) into the front_stock table so the Front Office knows if that '0.5' is KG or Grams.
+
+Match the UPSERT on brand_id, item_id, and location_tag.
+
+Current Location Tags: 'MANUFACTURING' and 'SALE'.
+
+Please provide the PL/pgSQL code for the trigger."
+
+I am finishing the inventory transfer logic. My system stores stock in the highest possible unit (e.g., 0.5kg), and the UI correctly displays these units by fetching them from the stock_items table.
+
+The Task:
+Update the PL/pgSQL function stock_issues_decrement_stock() which runs AFTER INSERT on stock_issues.
+
+The Logic:
+
+Deduct: Subtract NEW.qty_issued from stock_items.current_stock.
+
+Route: * If NEW.issue_type = 'Manufacturing', set the location to 'MANUFACTURING'.
+
+If NEW.issue_type = 'Sale', set the location to 'SALE'.
+
+Fetch & Upsert:
+
+Inside the function, declare a variable to hold the unit.
+
+SELECT the unit from stock_items where id = NEW.stock_item_id.
+
+UPSERT into front_stock (matching on brand_id, item_id, and location_tag).
+
+If the row exists, quantity = quantity + NEW.qty_issued.
+
+If it doesn't exist, insert a new row with the unit we just fetched.
+
+Constraint:
+Ensure this only happens for 'Manufacturing' and 'Sale' issue types. All other types (Wastage, Theft, etc.) should only perform the deduction from stock_items without touching front_stock.
+
+Please provide the final SQL function."

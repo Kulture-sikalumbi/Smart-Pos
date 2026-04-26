@@ -54,6 +54,7 @@ const posItems = [
 
 const inventoryItems = [
   { title: 'Stock Items', url: '/app/inventory/items', icon: Package, permission: 'viewInventory' as const },
+  { title: 'Front Office Stock', url: '/app/inventory/front-office-stock', icon: Package, permission: 'viewInventory' as const },
   { title: 'Stock Issues', url: '/app/inventory/stock-issues', icon: ArrowRightLeft, permission: 'createStockIssues' as const },
   { title: 'Stock Take', url: '/app/inventory/stock-take', icon: ClipboardCheck, permission: 'performStockTake' as const },
   { title: 'Mthunzi-Smart', url: '/app/inventory/advanced-gaap', icon: Calculator, permission: 'viewInventory' as const },
