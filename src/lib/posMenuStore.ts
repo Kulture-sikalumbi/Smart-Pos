@@ -76,7 +76,7 @@ async function refreshFromSupabase() {
       // avoid selecting `image_url` (may not exist) and avoid aliasing to keep PostgREST happy
       const resItems = await supabase!
         .from('products')
-        .select('id,code,name,category_id,department_id,base_price,image_storage_path,description')
+        .select('id,code,name,category_id,department_id,base_price,image_storage_path,description,physical_stock_item_id')
         .eq('brand_id', brandId);
       if (resItems.error) throw resItems.error;
 
@@ -96,6 +96,7 @@ async function refreshFromSupabase() {
         is_available: true,
         modifier_groups: null,
         track_inventory: false,
+        physical_stock_item_id: p.physical_stock_item_id ?? null,
       }));
     } catch (pubErr) {
       console.warn('[posMenuStore] refresh using public tables failed, retrying legacy erp schema', pubErr);
@@ -136,6 +137,7 @@ async function refreshFromSupabase() {
       isAvailable: Boolean((r as any).is_available),
       modifierGroups: ((r as any).modifier_groups as string[] | null) ?? undefined,
       trackInventory: Boolean((r as any).track_inventory),
+      physicalStockItemId: (r as any).physical_stock_item_id ?? undefined,
     }));
 
     cachedState = { version: 1, categories, items };
@@ -447,6 +449,7 @@ export async function upsertPosMenuItem(item: POSMenuItem): Promise<void> {
       base_price: item.price,
       // Always include description (nullable) to avoid sending undefined
       description: (item as any).description ?? null,
+      physical_stock_item_id: (item as any).physicalStockItemId ?? null,
     };
     if (item.image) {
       if (typeof item.image === 'string' && item.image.startsWith('http')) pubPayload.image_url = item.image;

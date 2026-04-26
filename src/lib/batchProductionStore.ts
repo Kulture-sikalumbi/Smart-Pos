@@ -1,10 +1,10 @@
 import type { BatchProduction, Recipe } from '@/types';
 import { batchProductions as seededBatches } from '@/data/mockData';
 import { getManufacturingRecipeById } from '@/lib/manufacturingRecipeStore';
-import { applyBatchProductionToStock, revertBatchProductionFromStock } from '@/lib/stockStore';
 import { logSensitiveAction } from '@/lib/systemAuditLog';
 import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
 import { getActiveBrandId, subscribeActiveBrandId } from '@/lib/activeBrand';
+import { getFrontStockSnapshot, refreshFrontStock } from '@/lib/frontStockStore';
 
 const STORAGE_KEY = 'mthunzi.manufacturing.batches.v1';
 
@@ -217,72 +217,54 @@ export async function recordBatchProduction(params: {
     producedBy: params.producedBy,
   });
 
-  const stockResult = await applyBatchProductionToStock({ recipe, batch: nextBatch });
-  if (stockResult.ok !== true) {
-    if ('insufficient' in stockResult) {
-      throw new BatchInsufficientStockError(stockResult.insufficient);
-    }
-    throw new BatchInsufficientStockError([]);
+  // Pre-check against front_stock(MANUFACTURING) so errors guide the user correctly.
+  const manufacturingRows = getFrontStockSnapshot().filter((r) => String(r.locationTag).toUpperCase() === 'MANUFACTURING');
+  const mByItemId = new Map(manufacturingRows.map((r) => [String(r.itemId), Number(r.quantity ?? 0) || 0] as const));
+  const insufficient: Array<{ itemId: string; requiredQty: number; onHandQty: number }> = [];
+  for (const ing of nextBatch.ingredientsUsed) {
+    const required = Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
+    if (required <= 0) continue;
+    const onHand = mByItemId.get(String(ing.ingredientId)) ?? 0;
+    if (required > onHand + 1e-9) insufficient.push({ itemId: ing.ingredientId, requiredQty: required, onHandQty: onHand });
   }
+  if (insufficient.length) throw new BatchInsufficientStockError(insufficient);
 
   // Save to Supabase if configured
   if (isSupabaseConfigured() && supabase && currentBrandId) {
     try {
-      const { data: batchData, error: batchError } = await supabase
-        .from('batch_productions')
-        .insert({
-          brand_id: currentBrandId,
-          recipe_id: nextBatch.recipeId,
-          recipe_name: nextBatch.recipeName,
-          batch_date: nextBatch.batchDate,
-          theoretical_output: nextBatch.theoreticalOutput,
-          actual_output: nextBatch.actualOutput,
-          yield_variance: nextBatch.yieldVariance,
-          yield_variance_percent: nextBatch.yieldVariancePercent,
-          total_cost: nextBatch.totalCost,
-          unit_cost: nextBatch.unitCost,
-          produced_by: nextBatch.producedBy,
-        })
-        .select()
-        .single();
+      const ingredientsPayload = nextBatch.ingredientsUsed
+        .filter((i) => Number.isFinite(i.requiredQty) && i.requiredQty > 0)
+        .map((i) => ({
+          ingredient_id: i.ingredientId,
+          ingredient_code: i.ingredientCode,
+          ingredient_name: i.ingredientName,
+          required_qty: i.requiredQty,
+          unit_type: i.unitType,
+          unit_cost: i.unitCost,
+        }));
 
-      if (batchError) {
-        console.error('Failed to save batch production:', batchError);
-        // Revert stock changes since DB save failed
-        await revertBatchProductionFromStock({ recipe, batch: nextBatch });
-        throw new Error(`Failed to save batch: ${batchError.message}`);
-      }
+      const { data: batchId, error: rpcErr } = await supabase.rpc('record_batch_production_front_stock', {
+        p_brand_id: currentBrandId,
+        p_recipe_id: nextBatch.recipeId,
+        p_recipe_name: nextBatch.recipeName,
+        p_batch_date: nextBatch.batchDate,
+        p_theoretical_output: nextBatch.theoreticalOutput,
+        p_actual_output: nextBatch.actualOutput,
+        p_yield_variance: nextBatch.yieldVariance,
+        p_yield_variance_percent: nextBatch.yieldVariancePercent,
+        p_total_cost: nextBatch.totalCost,
+        p_unit_cost: nextBatch.unitCost,
+        p_produced_by: nextBatch.producedBy,
+        p_finished_good_code: String(recipe.parentItemCode),
+        p_ingredients: ingredientsPayload,
+      } as any);
 
-      // Save ingredients
-      const ingredientsToInsert = nextBatch.ingredientsUsed.map(ing => ({
-        batch_production_id: batchData.id,
-        ingredient_id: ing.ingredientId,
-        ingredient_code: ing.ingredientCode,
-        ingredient_name: ing.ingredientName,
-        required_qty: ing.requiredQty,
-        unit_type: ing.unitType,
-        unit_cost: ing.unitCost,
-      }));
-
-      const { error: ingError } = await supabase
-        .from('batch_production_ingredients')
-        .insert(ingredientsToInsert);
-
-      if (ingError) {
-        console.error('Failed to save batch ingredients:', ingError);
-        // Try to delete the batch record
-        await supabase.from('batch_productions').delete().eq('id', batchData.id);
-        // Revert stock changes
-        await revertBatchProductionFromStock({ recipe, batch: nextBatch });
-        throw new Error(`Failed to save batch ingredients: ${ingError.message}`);
-      }
-
-      // Update the batch ID to the database ID
-      nextBatch.id = batchData.id;
+      if (rpcErr) throw new Error(String(rpcErr.message ?? rpcErr));
+      nextBatch.id = String(batchId ?? nextBatch.id);
+      // Force immediate stock refresh so UI reflects batch output instantly.
+      try { await refreshFrontStock(); } catch {}
     } catch (err) {
       console.error('Error saving batch to Supabase:', err);
-      // Revert stock changes
-      await revertBatchProductionFromStock({ recipe, batch: nextBatch });
       throw err;
     }
   }
@@ -318,34 +300,18 @@ export async function deleteBatchProduction(batchId: string) {
   const recipe = getManufacturingRecipeById(toDelete.recipeId);
   if (!recipe) throw new Error('Cannot delete batch: recipe not found.');
 
-  const revert = await revertBatchProductionFromStock({ recipe, batch: toDelete });
-  if (revert.ok !== true) {
-    const first = revert.insufficientFinishedGoods[0];
-    throw new Error(
-      first
-        ? `Cannot delete batch: finished goods already used (need ${first.requiredQty}, on hand ${first.onHandQty}).`
-        : 'Cannot delete batch: finished goods already used.'
-    );
-  }
-
   // Delete from Supabase if configured
   if (isSupabaseConfigured() && supabase) {
     try {
-      const { error } = await supabase
-        .from('batch_productions')
-        .delete()
-        .eq('id', batchId);
-
-      if (error) {
-        console.error('Failed to delete batch from Supabase:', error);
-        // Revert stock changes since DB delete failed
-        await applyBatchProductionToStock({ recipe, batch: toDelete });
-        throw new Error(`Failed to delete batch: ${error.message}`);
-      }
+      const brandId = currentBrandId ?? getActiveBrandId();
+      if (!brandId) throw new Error('Missing brand id');
+      const { error: rpcErr } = await supabase.rpc('delete_batch_production_front_stock', {
+        p_brand_id: brandId,
+        p_batch_id: batchId,
+      } as any);
+      if (rpcErr) throw new Error(String(rpcErr.message ?? rpcErr));
     } catch (err) {
       console.error('Error deleting batch from Supabase:', err);
-      // Revert stock changes
-      await applyBatchProductionToStock({ recipe, batch: toDelete });
       throw err;
     }
   }
@@ -353,6 +319,8 @@ export async function deleteBatchProduction(batchId: string) {
   const next = existing.filter((b) => b.id !== batchId);
   state = next;
   emit();
+
+  try { await refreshFrontStock(); } catch {}
 
   try {
     void logSensitiveAction({

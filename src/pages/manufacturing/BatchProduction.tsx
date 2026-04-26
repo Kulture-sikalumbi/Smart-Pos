@@ -15,6 +15,7 @@ import { toast } from '@/hooks/use-toast';
 import type { Recipe } from '@/types';
 import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes } from '@/lib/manufacturingRecipeStore';
 import { getStockItemsSnapshot, subscribeStockItems } from '@/lib/stockStore';
+import { getFrontStockSnapshot, subscribeFrontStock } from '@/lib/frontStockStore';
 import { deleteBatchProduction, ensureBatchProductionsLoaded, getBatchProductionsSnapshot, recordBatchProduction, subscribeBatchProductions, BatchInsufficientStockError } from '@/lib/batchProductionStore';
 
 export default function BatchProduction() {
@@ -22,6 +23,8 @@ export default function BatchProduction() {
   const recipes = useSyncExternalStore(subscribeManufacturingRecipes, getManufacturingRecipesSnapshot);
   const batches = useSyncExternalStore(subscribeBatchProductions, getBatchProductionsSnapshot);
   const stockItems = useSyncExternalStore(subscribeStockItems, getStockItemsSnapshot);
+  const frontStock = useSyncExternalStore(subscribeFrontStock, getFrontStockSnapshot);
+  const stockById = useMemo(() => new Map(stockItems.map((s) => [s.id, s] as const)), [stockItems]);
 
   const [recordOpen, setRecordOpen] = useState(false);
   const [recipeId, setRecipeId] = useState<string>(() => recipes[0]?.id ?? '');
@@ -33,6 +36,8 @@ export default function BatchProduction() {
   const [producedBy, setProducedBy] = useState('Kitchen Staff');
   const [recipeSearchOpen, setRecipeSearchOpen] = useState(false);
   const [recipeSearchTerm, setRecipeSearchTerm] = useState('');
+  const [recordErrorMessage, setRecordErrorMessage] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const selectedRecipe = useMemo(() => recipes.find(r => r.id === recipeId) ?? recipes[0] ?? null, [recipes, recipeId]);
 
@@ -70,16 +75,26 @@ export default function BatchProduction() {
     setTheoreticalOutput(r ? r.outputQty : 0);
     setActualOutput(r ? r.outputQty : 0);
     setProducedBy('Kitchen Staff');
+    setRecordErrorMessage(null);
     setRecordOpen(true);
   };
 
   const submit = async () => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    setRecordErrorMessage(null);
     if (!selectedRecipe) {
-      toast({ title: 'No recipe', description: 'Create a recipe first.' });
+      const msg = 'Create a recipe first.';
+      setRecordErrorMessage(msg);
+      toast({ title: 'No recipe', description: msg });
+      setIsSubmitting(false);
       return;
     }
     if (!actualOutput || actualOutput <= 0) {
-      toast({ title: 'Invalid output', description: 'Actual output must be greater than 0.' });
+      const msg = 'Actual output must be greater than 0.';
+      setRecordErrorMessage(msg);
+      toast({ title: 'Invalid output', description: msg });
+      setIsSubmitting(false);
       return;
     }
     const theo = theoreticalOutput > 0 ? theoreticalOutput : actualOutput;
@@ -97,14 +112,29 @@ export default function BatchProduction() {
       setRecordOpen(false);
     } catch (e) {
       if (e instanceof BatchInsufficientStockError) {
+        const detail = e.items
+          .slice(0, 3)
+          .map((it) => {
+            const stock = stockById.get(String(it.itemId));
+            const name = stock?.name ?? String(it.itemId).slice(0, 8);
+            return `${name}: need ${it.requiredQty.toFixed(2)}, on hand ${it.onHandQty.toFixed(2)}`;
+          })
+          .join(' | ');
+        const more = e.items.length > 3 ? ` (+${e.items.length - 3} more)` : '';
+        const modalMsg = `Not enough MANUFACTURING stock for ${e.items.length} ingredient(s). Issue stock from Main Store to Manufacturing first. ${detail}${more}`;
+        setRecordErrorMessage(modalMsg);
         toast({
           title: 'Insufficient stock',
-          description: `Not enough stock for ${e.items.length} ingredient(s).`,
+          description: modalMsg,
           variant: 'destructive',
         });
         return;
       }
-      toast({ title: 'Failed to record batch', description: (e as Error)?.message ?? 'Unknown error', variant: 'destructive' });
+      const msg = (e as Error)?.message ?? 'Unknown error';
+      setRecordErrorMessage(msg);
+      toast({ title: 'Failed to record batch', description: msg, variant: 'destructive' });
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -214,6 +244,7 @@ export default function BatchProduction() {
         onOpenChange={setRecordOpen}
         recipes={recipes}
         stockItems={stockItems}
+        manufacturingOnHandByItemId={new Map(frontStock.filter((r) => String(r.locationTag).toUpperCase() === 'MANUFACTURING').map((r) => [String(r.itemId), Number(r.quantity ?? 0) || 0] as const))}
         recipeId={recipeId}
         setRecipeId={setRecipeId}
         batchDate={batchDate}
@@ -226,6 +257,8 @@ export default function BatchProduction() {
         setProducedBy={setProducedBy}
         recipeSearchOpen={recipeSearchOpen}
         setRecipeSearchOpen={setRecipeSearchOpen}
+        errorMessage={recordErrorMessage}
+        isSubmitting={isSubmitting}
         onSubmit={submit}
       />
     </div>
@@ -237,6 +270,7 @@ function RecordBatchDialog(props: {
   onOpenChange: (open: boolean) => void;
   recipes: Recipe[];
   stockItems: Array<{ id: string; currentStock: number; unitType: string }>;
+  manufacturingOnHandByItemId: Map<string, number>;
   recipeId: string;
   setRecipeId: (id: string) => void;
   batchDate: string;
@@ -249,6 +283,8 @@ function RecordBatchDialog(props: {
   setProducedBy: (v: string) => void;
   recipeSearchOpen: boolean;
   setRecipeSearchOpen: (open: boolean) => void;
+  errorMessage?: string | null;
+  isSubmitting?: boolean;
   onSubmit: () => void;
 }) {
   const { formatMoneyPrecise } = useCurrency();
@@ -262,7 +298,7 @@ function RecordBatchDialog(props: {
     const multiplier = (Number.isFinite(props.actualOutput) ? props.actualOutput : 0) / outputQty;
     return r.ingredients.map((i) => {
       const requiredQty = i.requiredQty * multiplier;
-      const onHand = stockById.get(i.ingredientId)?.currentStock ?? 0;
+      const onHand = props.manufacturingOnHandByItemId.get(String(i.ingredientId)) ?? 0;
       return {
         id: i.id,
         name: i.ingredientName,
@@ -272,11 +308,11 @@ function RecordBatchDialog(props: {
         ok: requiredQty <= onHand + 1e-9,
       };
     });
-  }, [r, props.actualOutput, stockById]);
+  }, [r, props.actualOutput, props.manufacturingOnHandByItemId]);
 
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Record batch</DialogTitle>
         </DialogHeader>
@@ -387,9 +423,24 @@ function RecordBatchDialog(props: {
           ) : null}
         </div>
 
+        {props.errorMessage ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {props.errorMessage}
+          </div>
+        ) : null}
+
         <DialogFooter>
-          <Button variant="outline" onClick={() => props.onOpenChange(false)}>Cancel</Button>
-          <Button onClick={props.onSubmit}>Record</Button>
+          <Button variant="outline" onClick={() => props.onOpenChange(false)} disabled={Boolean(props.isSubmitting)}>Cancel</Button>
+          <Button onClick={props.onSubmit} disabled={Boolean(props.isSubmitting)}>
+            {props.isSubmitting ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Recording...
+              </>
+            ) : (
+              'Record'
+            )}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -7,6 +7,9 @@ export type FrontStockRow = {
   id: string;
   brandId: string;
   itemId: string;
+  menuItemId?: string;
+  producedCode?: string;
+  producedName?: string;
   locationTag: string;
   quantity: number;
   unit: string;
@@ -75,10 +78,20 @@ async function fetchFromDb() {
       return;
     }
 
-    const { data: frontRows, error: frontErr } = await supabase
+    let frontRows: any[] | null = null;
+    let frontErr: any = null;
+    ({ data: frontRows, error: frontErr } = await supabase
       .from('front_stock')
-      .select('id, brand_id, item_id, location_tag, quantity, unit, updated_at')
-      .eq('brand_id', brandId);
+      .select('id, brand_id, item_id, menu_item_id, produced_code, produced_name, location_tag, quantity, unit, updated_at')
+      .eq('brand_id', brandId));
+
+    // Backward-compatible retry in case one of the newer columns is not deployed yet.
+    if (frontErr) {
+      ({ data: frontRows, error: frontErr } = await supabase
+        .from('front_stock')
+        .select('id, brand_id, item_id, produced_code, produced_name, location_tag, quantity, unit, updated_at')
+        .eq('brand_id', brandId));
+    }
 
     if (frontErr) {
       console.warn('[frontStockStore] failed to fetch front_stock', frontErr);
@@ -88,11 +101,17 @@ async function fetchFromDb() {
     const rows = (frontRows ?? []).map((r: any) => ({
       id: String(r.id),
       brandId: String(r.brand_id),
-      itemId: String(r.item_id),
+      itemId: r.item_id ? String(r.item_id) : '',
+      menuItemId: r.menu_item_id ? String(r.menu_item_id) : undefined,
+      producedCode: r.produced_code ? String(r.produced_code) : undefined,
+      producedName: r.produced_name ? String(r.produced_name) : undefined,
       locationTag: String(r.location_tag),
       quantity: typeof r.quantity === 'number' ? r.quantity : parseFloat(r.quantity ?? 0) || 0,
       unit: String(r.unit ?? ''),
       updatedAt: r.updated_at ? String(r.updated_at) : null,
+      // Null-safe fallback for produced goods rows
+      itemName: r.produced_name ? String(r.produced_name) : undefined,
+      itemCode: r.produced_code ? String(r.produced_code) : undefined,
     })) as FrontStockRow[];
 
     // Join item name/code via a second query to avoid relying on relationship names.

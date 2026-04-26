@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import type { DepartmentId, Recipe, RecipeIngredient, StockItem, UnitType } from '@/types';
 import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes, upsertManufacturingRecipe, deleteManufacturingRecipe, ensureRecipesLoaded } from '@/lib/manufacturingRecipeStore';
 import { getStockItemsSnapshot, subscribeStockItems } from '@/lib/stockStore';
+import { getFrontStockSnapshot, subscribeFrontStock } from '@/lib/frontStockStore';
 import { getPosMenuItemsSnapshot, subscribePosMenu } from '@/lib/posMenuStore';
 import { cn } from '@/lib/utils';
 import { getCategoriesSnapshot, refreshCategories, subscribeCategories } from '@/lib/categoriesStore';
@@ -60,6 +61,7 @@ export default function Recipes() {
     const { formatMoneyPrecise } = useCurrency();
   const recipes = useSyncExternalStore(subscribeManufacturingRecipes, getManufacturingRecipesSnapshot);
   const stockItems = useSyncExternalStore(subscribeStockItems, getStockItemsSnapshot);
+  const frontStock = useSyncExternalStore(subscribeFrontStock, getFrontStockSnapshot);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [editorOpen, setEditorOpen] = useState(false);
@@ -68,6 +70,16 @@ export default function Recipes() {
   const location = useLocation();
 
   const stockById = useMemo(() => new Map(stockItems.map(s => [s.id, s] as const)), [stockItems]);
+  const manufacturingOnHandByItemId = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of frontStock ?? []) {
+      if (String(r.locationTag).toUpperCase() !== 'MANUFACTURING') continue;
+      const id = String(r.itemId ?? '');
+      if (!id) continue;
+      m.set(id, Number(r.quantity ?? 0) || 0);
+    }
+    return m;
+  }, [frontStock]);
 
   const filteredRecipes = useMemo(() => {
     const q = searchTerm.trim().toLowerCase();
@@ -181,6 +193,8 @@ export default function Recipes() {
                     <TableRow>
                       <TableHead>Ingredient</TableHead>
                       <TableHead className="text-right">Qty Required</TableHead>
+                      <TableHead className="text-right">On hand (MFG)</TableHead>
+                      <TableHead className="text-right">Status</TableHead>
                       <TableHead className="text-right">Unit Cost</TableHead>
                       <TableHead className="text-right">Total Cost</TableHead>
                     </TableRow>
@@ -190,6 +204,25 @@ export default function Recipes() {
                         <TableRow key={ing.id}>
                           <TableCell>{ing.ingredientName}</TableCell>
                           <TableCell className="text-right">{formatIngredientDisplay(ing, stockById.get(ing.ingredientId))}</TableCell>
+                          <TableCell className="text-right">
+                            {(() => {
+                              const onHand = manufacturingOnHandByItemId.get(String(ing.ingredientId)) ?? 0;
+                              const unitLabel = getStockUnit(stockById.get(ing.ingredientId)) ?? mapUnitTypeToUnit(ing.unitType);
+                              return `${formatNumber(onHand)} ${unitLabel}`;
+                            })()}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {(() => {
+                              const required = Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
+                              const onHand = manufacturingOnHandByItemId.get(String(ing.ingredientId)) ?? 0;
+                              const ok = required <= onHand + 1e-9;
+                              return (
+                                <span className={ok ? 'text-success' : 'text-destructive'}>
+                                  {ok ? 'OK' : 'ISSUE TO MFG'}
+                                </span>
+                              );
+                            })()}
+                          </TableCell>
                           <TableCell className="text-right"><NumericCell value={ing.unitCost} money /></TableCell>
                           <TableCell className="text-right"><NumericCell value={ing.requiredQty * ing.unitCost} money /></TableCell>
                         </TableRow>
@@ -211,6 +244,7 @@ export default function Recipes() {
         }}
         editing={editingId ? recipes.find(r => r.id === editingId) ?? null : null}
         stockItems={stockItems}
+        manufacturingOnHandByItemId={manufacturingOnHandByItemId}
         onSaved={(r) => {
           // select the saved recipe and close editor
           try { setEditingId(r.id); } catch {}
@@ -233,7 +267,7 @@ function safeId(prefix: string) {
   return `${prefix}-${uuid}`;
 }
 
-function computeCosts(params: { draft: { outputQty: number; ingredients: DraftIngredient[] }; stockItems: StockItem[] }) {
+function computeCosts(params: { draft: { outputQty: number | ''; ingredients: DraftIngredient[] }; stockItems: StockItem[] }) {
   const byId = new Map(params.stockItems.map(s => [s.id, s] as const));
     const total = params.draft.ingredients.reduce((sum, ing) => {
       const s = byId.get(ing.ingredientId);
@@ -257,7 +291,7 @@ function computeCosts(params: { draft: { outputQty: number; ingredients: DraftIn
       const unitCost = s ? s.currentCost : 0;
       return sum + effectiveQty * (Number.isFinite(unitCost) ? unitCost : 0);
     }, 0);
-  const outputQty = (params.draft.outputQty === '' || params.draft.outputQty <= 0) ? 1 : params.draft.outputQty;
+  const outputQty = (params.draft.outputQty === '' || (typeof params.draft.outputQty === 'number' && params.draft.outputQty <= 0)) ? 1 : Number(params.draft.outputQty);
   const unit = total / outputQty;
   return { totalCost: total, unitCost: unit };
 }
@@ -267,10 +301,11 @@ export function RecipeEditorDialog(props: {
   onOpenChange: (open: boolean) => void;
   editing: Recipe | null;
   stockItems: StockItem[];
+  manufacturingOnHandByItemId?: Map<string, number>;
   onSaved?: (r: { id: string; parentItemCode: string; parentItemName: string }) => void;
   initialValues?: { parentItemName?: string; parentItemCode?: string; parentItemId?: string; finishedGoodDepartmentId?: DepartmentId };
 }) {
-  const { open, onOpenChange, editing, stockItems, initialValues } = props;
+  const { open, onOpenChange, editing, stockItems, initialValues, manufacturingOnHandByItemId } = props;
 
   const { formatMoneyPrecise } = useCurrency();
 
@@ -365,6 +400,24 @@ export function RecipeEditorDialog(props: {
 
   const cost = useMemo(() => computeCosts({ draft: { outputQty, ingredients }, stockItems }), [outputQty, ingredients, stockItems]);
   const byId = useMemo(() => new Map(stockItems.map(s => [s.id, s] as const)), [stockItems]);
+  const ingredientAvailability = useMemo(() => {
+    return ingredients.map((ing) => {
+      const requiredQty = typeof ing.requiredQty === 'number' && Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
+      const onHand = manufacturingOnHandByItemId?.get(String(ing.ingredientId)) ?? 0;
+      const stock = byId.get(ing.ingredientId);
+      return {
+        id: ing.id,
+        name: stock?.name ?? ing.ingredientId,
+        requiredQty,
+        onHand,
+        ok: requiredQty <= onHand + 1e-9,
+      };
+    });
+  }, [ingredients, manufacturingOnHandByItemId, byId]);
+  const lowIngredients = useMemo(
+    () => ingredientAvailability.filter((x) => x.requiredQty > 0 && !x.ok),
+    [ingredientAvailability]
+  );
 
   const addIngredient = (stockItemId: string) => {
     if (ingredients.some(i => i.ingredientId === stockItemId)) {
@@ -462,13 +515,18 @@ export function RecipeEditorDialog(props: {
       })
       .filter((i) => i.requiredQty > 0);
 
+    const resolvedOutputQty =
+      typeof outputQty === 'number' && Number.isFinite(outputQty) && outputQty > 0
+        ? outputQty
+        : 1;
+
     await upsertManufacturingRecipe({
       id: editing?.id,
       parentItemId: (parentItemId && parentItemId.trim() ? parentItemId : (editing?.parentItemId ?? trimmedCode)),
       parentItemCode: trimmedCode,
       parentItemName: trimmedName,
       finishedGoodDepartmentId: finishedDept,
-      outputQty: outputQty === '' ? 1 : Number(outputQty),
+      outputQty: resolvedOutputQty,
       outputUnitType,
       ingredients: recipeIngredients,
     });
@@ -617,6 +675,18 @@ export function RecipeEditorDialog(props: {
         </div>
 
         <DataTableWrapper>
+          {lowIngredients.length > 0 ? (
+            <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <div className="font-medium">Low Manufacturing stock detected</div>
+              <div className="text-xs mt-1">
+                Issue stock from Main Store to Manufacturing first.
+                {' '}
+                {lowIngredients.length === 1
+                  ? `${lowIngredients[0].name} is below required quantity.`
+                  : `${lowIngredients.length} ingredients are below required quantity.`}
+              </div>
+            </div>
+          ) : null}
           <Table className="data-table">
             <TableHeader>
               <TableRow>
@@ -635,6 +705,7 @@ export function RecipeEditorDialog(props: {
               ) : (
                 ingredients.map((ing) => {
                   const s = byId.get(ing.ingredientId);
+                  const onHand = manufacturingOnHandByItemId?.get(String(ing.ingredientId)) ?? null;
                   // compute effective unit cost respecting per-ingredient unit selection
                   const ingUnit = ing.unit ?? (s ? ((s as any).unit ?? mapUnitTypeToUnit(s.unitType)) : undefined);
                   let unitCost = s?.currentCost ?? 0;
@@ -643,12 +714,18 @@ export function RecipeEditorDialog(props: {
                     if (iu === 'g' && s.unitType === 'KG') unitCost = (s.currentCost || 0) / 1000;
                     if (iu === 'ml' && s.unitType === 'LTRS') unitCost = (s.currentCost || 0) / 1000;
                   }
-                  const lineTotal = (Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0) * unitCost;
+                  const reqQty = typeof ing.requiredQty === 'number' && Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
+                  const lineTotal = reqQty * unitCost;
                   return (
                     <TableRow key={ing.id}>
                       <TableCell>
                         <div className="font-medium">{s?.name ?? ing.ingredientId}</div>
                         <div className="text-xs text-muted-foreground">{s?.code ?? ''}</div>
+                        {onHand !== null ? (
+                          <div className="text-xs text-muted-foreground">
+                            On hand (MFG): {formatNumber(onHand)} {getStockUnit(s) ?? mapUnitTypeToUnit(s?.unitType)}
+                          </div>
+                        ) : null}
                       </TableCell>
                         <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
@@ -669,7 +746,7 @@ export function RecipeEditorDialog(props: {
                             onValueChange={(v) => {
                               setIngredients(prev => prev.map(p => {
                                 if (p.id !== ing.id) return p;
-                                const prevQty = Number.isFinite(p.requiredQty) ? p.requiredQty : 0;
+                                const prevQty = typeof p.requiredQty === 'number' && Number.isFinite(p.requiredQty) ? p.requiredQty : 0;
                                 // If user selected grams or millilitres, convert to base unit
                                 if (v === 'g' && prevQty > 0) {
                                   const converted = prevQty / 1000;

@@ -16,6 +16,7 @@ import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes, upsertM
 import { getStockItemsSnapshot, subscribeStockItems } from '@/lib/stockStore';
 import { RecipeEditorDialog } from '@/pages/manufacturing/Recipes';
 import { getPosMenuItemsSnapshot, subscribePosMenu } from '@/lib/posMenuStore';
+import { getFrontStockSnapshot, subscribeFrontStock } from '@/lib/frontStockStore';
 import { isSupabaseConfigured, supabase, SUPABASE_BUCKET } from '@/lib/supabaseClient';
 import { usePosMenu } from '@/hooks/usePosMenu';
 import { deletePosCategory, deletePosMenuItem, resetPosMenuToDefaults, upsertPosCategory, upsertPosMenuItem } from '@/lib/posMenuStore';
@@ -36,6 +37,7 @@ interface MenuItem {
   categoryId?: string;
   code?: string;
   description?: string;
+  physicalStockItemId?: string;
 }
 
 const MenuManager: React.FC = () => {
@@ -46,6 +48,7 @@ const MenuManager: React.FC = () => {
   const [form, setForm] = useState<Partial<MenuItem>>({});
   const [recipes, setRecipes] = useState<{ id: string; parentItemName: string; parentItemCode: string }[]>([]);
   const stockItems = useSyncExternalStore(subscribeStockItems, getStockItemsSnapshot);
+  const frontStock = useSyncExternalStore(subscribeFrontStock, getFrontStockSnapshot);
   const [recipeEditorOpen, setRecipeEditorOpen] = useState(false);
   const categoriesSnap = useSyncExternalStore(subscribeCategories, getCategoriesSnapshot, getCategoriesSnapshot);
   const categories = categoriesSnap.categories;
@@ -65,6 +68,20 @@ const MenuManager: React.FC = () => {
   const [stockSuggestionsOpen, setStockSuggestionsOpen] = useState(false);
   const [confirmRetailModalOpen, setConfirmRetailModalOpen] = useState(false);
   const [pendingStockSelection, setPendingStockSelection] = useState<any>(null);
+  const saleFrontStockOptions = useMemo(() => {
+    const byId = new Map(stockItems.map((s) => [String(s.id), s] as const));
+    return (frontStock ?? [])
+      .filter((r) => String(r.locationTag).toUpperCase() === 'SALE')
+      .map((r) => {
+        const meta = byId.get(String(r.itemId));
+        return {
+          itemId: String(r.itemId),
+          label: `${meta?.name ?? r.itemName ?? r.itemId} (${meta?.code ?? r.itemCode ?? 'N/A'})`,
+          onHand: Number(r.quantity ?? 0) || 0,
+        };
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [frontStock, stockItems]);
   const errs = useMemo(() => {
     const errs: string[] = [];
     const name = String(form.name ?? '').trim();
@@ -171,6 +188,7 @@ const MenuManager: React.FC = () => {
       modifierGroups: undefined,
       trackInventory: false,
       description: String((form as any).description ?? ''),
+      physicalStockItemId: (form as any).physicalStockItemId ?? undefined,
     };
     // include categoryId only when explicitly provided
     if ((form as any).categoryId) payload.categoryId = String((form as any).categoryId);
@@ -499,6 +517,35 @@ const MenuManager: React.FC = () => {
             </div>
 
             <div className="space-y-1">
+              <Label>Direct SALE Stock Link (optional)</Label>
+              <Select
+                value={(form as any).physicalStockItemId ?? '__none__'}
+                onValueChange={(v) => {
+                  if (v === '__none__') {
+                    setForm({ ...form, physicalStockItemId: undefined });
+                    return;
+                  }
+                  setForm({ ...form, physicalStockItemId: v });
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="(none)" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">(none)</SelectItem>
+                  {saleFrontStockOptions.map((o) => (
+                    <SelectItem key={o.itemId} value={o.itemId}>
+                      {o.label} - On hand: {o.onHand.toFixed(2)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="text-xs text-muted-foreground">
+                If linked, sales deduct directly from Front Office `SALE` stock for this item.
+              </div>
+            </div>
+
+            <div className="space-y-1">
               <Label>Name</Label>
               <Popover open={stockSuggestionsOpen} onOpenChange={setStockSuggestionsOpen}>
                 <PopoverTrigger asChild>
@@ -718,7 +765,7 @@ const MenuManager: React.FC = () => {
                 You're linking this menu item directly to the stock item "{pendingStockSelection?.name}".
                 This will automatically create a 1:1 manufacturing recipe that connects the menu item to this stock item for inventory tracking.
                 <br /><br />
-                When this item is sold, it will deduct 1 unit from the stock item's inventory.
+                When this item is sold, it will deduct from Front Office stock (SALE) or from recipe ingredients in MANUFACTURING.
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>

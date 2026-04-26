@@ -4,6 +4,9 @@ import { Search } from 'lucide-react';
 import { PageHeader, DataTableWrapper, NumericCell } from '@/components/common/PageComponents';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import {
@@ -13,6 +16,8 @@ import {
   subscribeToRealtimeFrontStock,
   type FrontStockRow,
 } from '@/lib/frontStockStore';
+import { supabase } from '@/lib/supabaseClient';
+import { toast } from '@/hooks/use-toast';
 
 type LocationFilter = 'all' | 'MANUFACTURING' | 'SALE';
 
@@ -30,6 +35,9 @@ export default function FrontOfficeStock() {
 
   const [tab, setTab] = useState<LocationFilter>('all');
   const [search, setSearch] = useState('');
+  const [targetByRowId, setTargetByRowId] = useState<Record<string, 'SALE' | 'MANUFACTURING'>>({});
+  const [movingRowId, setMovingRowId] = useState<string | null>(null);
+  const [transferRowId, setTransferRowId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!activeBrandId) return;
@@ -100,7 +108,9 @@ export default function FrontOfficeStock() {
     { key: 'qty', header: 'Qty' },
     { key: 'unit', header: 'Unit' },
     { key: 'updated', header: 'Updated' },
+    { key: 'move', header: 'Move/Transfer' },
   ] as const;
+  const transferRow = useMemo(() => (rows ?? []).find((r) => r.id === transferRowId) ?? null, [rows, transferRowId]);
 
   return (
     <div className="space-y-6">
@@ -143,11 +153,14 @@ export default function FrontOfficeStock() {
               {filtered.length ? (
                 filtered.map((r: FrontStockRow) => {
                   const loc = normalizeLocationTag(r.locationTag);
+                  const resolvedName = r.itemName || r.producedName || 'Unknown item';
+                  const resolvedCode = r.itemCode || r.producedCode || r.itemId || r.menuItemId || '';
+                  const canMoveToManufacturing = Boolean(r.itemId);
                   return (
                     <tr key={r.id} className="border-t">
                       <td className="p-3">
-                        <div className="font-medium">{r.itemName || 'Unknown item'}</div>
-                        <div className="text-xs text-muted-foreground">{r.itemCode ? `Code: ${r.itemCode}` : r.itemId}</div>
+                        <div className="font-medium">{resolvedName}</div>
+                        <div className="text-xs text-muted-foreground">{resolvedCode ? `Code: ${resolvedCode}` : 'No code'}</div>
                       </td>
                       <td className="p-3">
                         <span
@@ -168,6 +181,20 @@ export default function FrontOfficeStock() {
                       <td className="p-3 text-xs text-muted-foreground">
                         {r.updatedAt ? new Date(r.updatedAt).toLocaleString() : '—'}
                       </td>
+                      <td className="p-3">
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setTargetByRowId((prev) => ({ ...prev, [r.id]: prev[r.id] ?? 'SALE' }));
+                              setTransferRowId(r.id);
+                            }}
+                          >
+                            Transfer
+                          </Button>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })
@@ -182,6 +209,70 @@ export default function FrontOfficeStock() {
           </table>
         </div>
       </DataTableWrapper>
+
+      <Dialog open={Boolean(transferRowId)} onOpenChange={(open) => { if (!open) setTransferRowId(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Transfer Stock</DialogTitle>
+            <DialogDescription>
+              {transferRow ? `Move "${transferRow.itemName || transferRow.producedName || 'selected item'}" to another location.` : 'Select target location.'}
+            </DialogDescription>
+          </DialogHeader>
+          {transferRow ? (
+            <div className="space-y-2">
+              <Select
+                value={targetByRowId[transferRow.id] ?? 'SALE'}
+                onValueChange={(v: 'SALE' | 'MANUFACTURING') =>
+                  setTargetByRowId((prev) => ({ ...prev, [transferRow.id]: v }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose destination" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="SALE">Move to SALE</SelectItem>
+                  {Boolean(transferRow.itemId) ? (
+                    <SelectItem value="MANUFACTURING">Move to MANUFACTURING</SelectItem>
+                  ) : null}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTransferRowId(null)} disabled={Boolean(movingRowId && transferRowId)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!transferRow || movingRowId === transferRow.id}
+              onClick={async () => {
+                if (!transferRow) return;
+                try {
+                  setMovingRowId(transferRow.id);
+                  const target = targetByRowId[transferRow.id] ?? 'SALE';
+                  const { error } = await supabase.rpc('move_front_stock_location', {
+                    p_source_row_id: transferRow.id,
+                    p_target_location: target,
+                  } as any);
+                  if (error) throw new Error(String(error.message ?? error));
+                  await refreshFrontStock();
+                  toast({ title: 'Stock moved', description: `Moved to ${target}.` });
+                  setTransferRowId(null);
+                } catch (e) {
+                  toast({
+                    title: 'Move failed',
+                    description: (e as Error)?.message ?? 'Could not move stock.',
+                    variant: 'destructive',
+                  });
+                } finally {
+                  setMovingRowId(null);
+                }
+              }}
+            >
+              {transferRow && movingRowId === transferRow.id ? 'Moving...' : 'Apply Transfer'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

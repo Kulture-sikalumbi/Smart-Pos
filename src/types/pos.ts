@@ -169,6 +169,8 @@ export interface POSMenuItem {
   modifierGroups?: string[];
   /** If true, selling this item will attempt recipe-based inventory deduction. */
   trackInventory?: boolean;
+  /** Optional direct stock link for sale deduction from front_stock(SALE). */
+  physicalStockItemId?: string;
 }
 
 // Table Section
