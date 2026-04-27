@@ -38,6 +38,9 @@ export default function FrontOfficeStock() {
   const [targetByRowId, setTargetByRowId] = useState<Record<string, 'SALE' | 'MANUFACTURING'>>({});
   const [movingRowId, setMovingRowId] = useState<string | null>(null);
   const [transferRowId, setTransferRowId] = useState<string | null>(null);
+  const [reorderRowId, setReorderRowId] = useState<string | null>(null);
+  const [reorderDraftByRowId, setReorderDraftByRowId] = useState<Record<string, string>>({});
+  const [savingReorderRowId, setSavingReorderRowId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!activeBrandId) return;
@@ -106,15 +109,22 @@ export default function FrontOfficeStock() {
     { key: 'item', header: 'Item' },
     { key: 'location', header: 'Location' },
     { key: 'qty', header: 'Qty' },
+    { key: 'reorder', header: 'Reorder' },
     { key: 'unit', header: 'Unit' },
     { key: 'updated', header: 'Updated' },
     { key: 'move', header: 'Move/Transfer' },
+    { key: 'editReorder', header: '' },
   ] as const;
   const transferRow = useMemo(() => (rows ?? []).find((r) => r.id === transferRowId) ?? null, [rows, transferRowId]);
+  const reorderRow = useMemo(() => (rows ?? []).find((r) => r.id === reorderRowId) ?? null, [rows, reorderRowId]);
 
   return (
     <div className="space-y-6">
       <PageHeader title="Front Office Stock" subtitle="Live view of stock transferred from Main Store to Manufacturing/Sale locations." />
+
+      <div className="rounded-md border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
+        Reorder level is optional, but recommended. Set it per item/location to get early warnings before stock runs out.
+      </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <Tabs value={tab} onValueChange={(v) => setTab(v as LocationFilter)}>
@@ -177,6 +187,22 @@ export default function FrontOfficeStock() {
                       <td className="p-3">
                         <NumericCell value={r.quantity} />
                       </td>
+                      <td className="p-3">
+                        {Number(r.reorderLevel ?? 0) > 0 ? (
+                          <span
+                            className={cn(
+                              'inline-flex items-center rounded px-2 py-0.5 text-xs font-semibold',
+                              (Number(r.quantity ?? 0) || 0) <= Number(r.reorderLevel ?? 0)
+                                ? 'bg-amber-100 text-amber-900'
+                                : 'bg-muted text-muted-foreground'
+                            )}
+                          >
+                            {Number(r.reorderLevel ?? 0)}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
                       <td className="p-3">{r.unit}</td>
                       <td className="p-3 text-xs text-muted-foreground">
                         {r.updatedAt ? new Date(r.updatedAt).toLocaleString() : '—'}
@@ -195,6 +221,23 @@ export default function FrontOfficeStock() {
                           </Button>
                         </div>
                       </td>
+                      <td className="p-3">
+                        <div className="flex justify-end">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setReorderRowId(r.id);
+                              setReorderDraftByRowId((prev) => ({
+                                ...prev,
+                                [r.id]: String(r.reorderLevel ?? 0),
+                              }));
+                            }}
+                          >
+                            Set reorder
+                          </Button>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })
@@ -209,6 +252,76 @@ export default function FrontOfficeStock() {
           </table>
         </div>
       </DataTableWrapper>
+
+      <Dialog open={Boolean(reorderRowId)} onOpenChange={(open) => { if (!open) setReorderRowId(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Set reorder level</DialogTitle>
+            <DialogDescription>
+              {reorderRow
+                ? `Set a minimum level for "${reorderRow.itemName || reorderRow.producedName || 'selected item'}" (${normalizeLocationTag(reorderRow.locationTag)}).`
+                : 'Set a minimum level.'}
+            </DialogDescription>
+          </DialogHeader>
+
+          {reorderRow ? (
+            <div className="space-y-2">
+              <div className="text-xs text-muted-foreground">
+                When Qty falls below this level, the row will be highlighted and POS will warn earlier.
+              </div>
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                value={reorderDraftByRowId[reorderRow.id] ?? String(reorderRow.reorderLevel ?? 0)}
+                onChange={(e) =>
+                  setReorderDraftByRowId((prev) => ({ ...prev, [reorderRow.id]: e.target.value }))
+                }
+              />
+              <div className="text-xs text-muted-foreground">Tip: leave it at 0 if you don’t want warnings for this item.</div>
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReorderRowId(null)} disabled={Boolean(savingReorderRowId && reorderRowId)}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!reorderRow || savingReorderRowId === reorderRow.id}
+              onClick={async () => {
+                if (!reorderRow) return;
+                try {
+                  setSavingReorderRowId(reorderRow.id);
+                  const raw = String(reorderDraftByRowId[reorderRow.id] ?? '').trim();
+                  const n = raw === '' ? 0 : Number(raw);
+                  if (!Number.isFinite(n) || n < 0) throw new Error('Reorder level must be a number ≥ 0.');
+
+                  const { error } = await supabase
+                    .from('front_stock')
+                    .update({ reorder_level: n })
+                    .eq('id', reorderRow.id)
+                    .eq('brand_id', activeBrandId);
+                  if (error) throw new Error(String(error.message ?? error));
+
+                  await refreshFrontStock();
+                  toast({ title: 'Reorder level saved', description: `Set to ${n}.` });
+                  setReorderRowId(null);
+                } catch (e) {
+                  toast({
+                    title: 'Save failed',
+                    description: (e as Error)?.message ?? 'Could not save reorder level.',
+                    variant: 'destructive',
+                  });
+                } finally {
+                  setSavingReorderRowId(null);
+                }
+              }}
+            >
+              {reorderRow && savingReorderRowId === reorderRow.id ? 'Saving...' : 'Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(transferRowId)} onOpenChange={(open) => { if (!open) setTransferRowId(null); }}>
         <DialogContent>

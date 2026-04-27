@@ -20,9 +20,8 @@ import { tables } from '@/data/posData';
 import { OrderItem, Order, OrderType, PaymentMethod, POSMenuItem } from '@/types/pos';
 import { cn } from '@/lib/utils';
 import PaymentDialog from '@/components/pos/PaymentDialog';
-import { InsufficientStockError, RecipeIncompleteError } from '@/lib/recipeEngine';
+import { RecipeIncompleteError } from '@/lib/recipeEngine';
 import { getManufacturingRecipesSnapshot } from '@/lib/manufacturingRecipeStore';
-import { applyStockDeductions, getStockItemById, deductStockItemsRemote } from '@/lib/stockStore';
 import { getOrdersSnapshot, subscribeOrders, upsertOrder, sendOrderPayload } from '@/lib/orderStore';
 import useKitchenRealtime from '@/hooks/useKitchenRealtime';
 import { useToast } from '@/hooks/use-toast';
@@ -40,6 +39,7 @@ import { getPosNotificationsSnapshot, subscribePosNotifications, markNotificatio
 import { ROLE_NAMES } from '@/types/auth';
 import { supabase } from '@/lib/supabaseClient';
 import { useCurrency } from '@/contexts/CurrencyContext';
+import { getFrontStockSnapshot, subscribeFrontStock } from '@/lib/frontStockStore';
 
 export default function POSTerminal() {
   const auth = useAuth();
@@ -52,6 +52,7 @@ export default function POSTerminal() {
   const categories = useMemo(() => menu.categories.slice().sort((a, b) => a.sortOrder - b.sortOrder), [menu.categories]);
   const items = useMemo(() => menu.items.slice(), [menu.items]);
   const orders = useSyncExternalStore(subscribeOrders, getOrdersSnapshot);
+  const frontStock = useSyncExternalStore(subscribeFrontStock, getFrontStockSnapshot);
 
   // debug viewer removed
 
@@ -549,6 +550,106 @@ export default function POSTerminal() {
     return base.filter((item) => item.categoryId === selectedCategory);
   }, [items, selectedCategory, searchQuery, smartMatches]);
 
+  const stockMaps = useMemo(() => {
+    const saleByItemId = new Map<string, { qty: number; reorder: number }>();
+    const saleByCode = new Map<string, { qty: number; reorder: number }>();
+    const mfgByItemId = new Map<string, { qty: number; reorder: number }>();
+    for (const r of frontStock ?? []) {
+      const loc = String((r as any).locationTag ?? '').toUpperCase();
+      const qty = Number((r as any).quantity ?? 0) || 0;
+      const reorder = Number((r as any).reorderLevel ?? 0) || 0;
+      const itemId = String((r as any).itemId ?? '').trim();
+      const code = String((r as any).producedCode ?? (r as any).itemCode ?? '').trim().toLowerCase();
+      if (loc === 'SALE') {
+        if (itemId) saleByItemId.set(itemId, { qty, reorder });
+        if (code) {
+          const prev = saleByCode.get(code) ?? { qty: 0, reorder: 0 };
+          saleByCode.set(code, { qty: prev.qty + qty, reorder: Math.max(prev.reorder, reorder) });
+        }
+      }
+      if (loc === 'MANUFACTURING') {
+        if (itemId) mfgByItemId.set(itemId, { qty, reorder });
+      }
+    }
+    return { saleByItemId, saleByCode, mfgByItemId };
+  }, [frontStock]);
+
+  const canSetMenuItemQty = useMemo(() => {
+    const recipes = getManufacturingRecipesSnapshot();
+    const recipeByCode = new Map(recipes.map((r) => [String(r.parentItemCode).trim().toLowerCase(), r] as const));
+    const recipeById = new Map(recipes.map((r) => [String(r.parentItemId), r] as const));
+
+    return (menuItem: POSMenuItem, nextQty: number): { ok: true } | { ok: false; title: string; description: string } => {
+      const safeNextQty = Math.max(0, Math.floor(nextQty));
+      if (safeNextQty <= 0) return { ok: true };
+
+      const directPhysicalId = String((menuItem as any)?.physicalStockItemId ?? '').trim();
+      const code = String(menuItem.code ?? '').trim().toLowerCase();
+
+      // 1) Ready-to-sell SALE by physical item id
+      if (directPhysicalId) {
+        const onHand = stockMaps.saleByItemId.get(directPhysicalId)?.qty ?? 0;
+        const reorder = stockMaps.saleByItemId.get(directPhysicalId)?.reorder ?? 0;
+        if (safeNextQty > onHand + 1e-9) {
+          const maxAllowed = Math.max(0, Math.floor(onHand + 1e-9));
+          return {
+            ok: false,
+            title: 'Not enough stock',
+            description: `You can add up to ${maxAllowed} ${menuItem.name}(s) based on current SALE stock (${onHand}).`,
+          };
+        }
+        if (reorder > 0 && onHand - safeNextQty <= reorder + 1e-9) {
+          return { ok: true };
+        }
+        return { ok: true };
+      }
+
+      // 2) Ready-to-sell SALE by produced/item code
+      if (code) {
+        const onHand = stockMaps.saleByCode.get(code)?.qty ?? 0;
+        if (onHand > 0) {
+          if (safeNextQty > onHand + 1e-9) {
+            const maxAllowed = Math.max(0, Math.floor(onHand + 1e-9));
+            return {
+              ok: false,
+              title: 'Not enough stock',
+              description: `You can add up to ${maxAllowed} ${menuItem.name}(s) based on current SALE stock (${onHand}).`,
+            };
+          }
+          return { ok: true };
+        }
+      }
+
+      // 3) Recipe path: MANUFACTURING ingredients
+      const recipe = recipeById.get(String(menuItem.id)) ?? (code ? recipeByCode.get(code) : undefined);
+      if (!recipe) return { ok: true }; // allow adding; send-to-kitchen will still enforce recipe completeness
+
+      const outputQty = Number(recipe.outputQty) > 0 ? Number(recipe.outputQty) : 1;
+      const multiplier = safeNextQty / outputQty;
+      const low: Array<{ name: string; onHand: number; required: number }> = [];
+      for (const ing of recipe.ingredients ?? []) {
+        const required = (Number((ing as any).requiredQty) || 0) * multiplier;
+        if (required <= 0) continue;
+        const onHand = stockMaps.mfgByItemId.get(String((ing as any).ingredientId))?.qty ?? 0;
+        if (onHand + 1e-9 < required) {
+          low.push({ name: String((ing as any).ingredientName ?? (ing as any).ingredientId), onHand, required });
+        }
+      }
+      if (low.length) {
+        const first = low[0];
+        const maxMakeable = first.required > 0
+          ? Math.max(0, Math.floor((first.onHand / first.required) * safeNextQty + 1e-9))
+          : 0;
+        return {
+          ok: false,
+          title: 'Not enough ingredients',
+          description: `You can add up to ${maxMakeable} ${menuItem.name}(s) with current Manufacturing stock. Limiting ingredient: ${first.name}.`,
+        };
+      }
+      return { ok: true };
+    };
+  }, [stockMaps]);
+
   const addItemWithQty = (menuItem: POSMenuItem, qty: number) => {
     const safeQty = Math.max(1, Math.floor(qty));
     setOrderItems(prevOrderItems => {
@@ -557,12 +658,22 @@ export default function POSTerminal() {
         return prevOrderItems.map((oi) => {
           if (oi.id !== existing.id) return oi;
           const nextQty = oi.quantity + safeQty;
+          const check = canSetMenuItemQty(menuItem, nextQty);
+          if (!check.ok) {
+            toast({ title: check.title, description: check.description, variant: 'destructive' });
+            return oi;
+          }
           return {
             ...oi,
             quantity: nextQty,
             total: computeLineTotal(oi.unitPrice, nextQty, oi.discountPercent),
           };
         });
+      }
+      const check = canSetMenuItemQty(menuItem, safeQty);
+      if (!check.ok) {
+        toast({ title: check.title, description: check.description, variant: 'destructive' });
+        return prevOrderItems;
       }
       const newItem: OrderItem = {
         id: `oi-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -608,6 +719,11 @@ export default function POSTerminal() {
     console.log('[addItem] called for', menuItem.name, menuItem.id);
     const existing = orderItems.find((oi) => oi.menuItemId === menuItem.id);
     if (existing) {
+      const check = canSetMenuItemQty(menuItem, existing.quantity + 1);
+      if (!check.ok) {
+        toast({ title: check.title, description: check.description, variant: 'destructive' });
+        return;
+      }
       setOrderItems(
         orderItems.map((oi) => {
           if (oi.id !== existing.id) return oi;
@@ -622,6 +738,11 @@ export default function POSTerminal() {
       return;
     }
 
+    const check = canSetMenuItemQty(menuItem, 1);
+    if (!check.ok) {
+      toast({ title: check.title, description: check.description, variant: 'destructive' });
+      return;
+    }
     const newItem: OrderItem = {
       id: `oi-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       menuItemId: menuItem.id,
@@ -666,6 +787,14 @@ export default function POSTerminal() {
     const updated = orderItems.map(item => {
       if (item.id === itemId) {
         const newQty = Math.max(0, item.quantity + delta);
+        const mi = items.find((x) => x.id === item.menuItemId);
+        if (mi) {
+          const check = canSetMenuItemQty(mi, newQty);
+          if (!check.ok) {
+            toast({ title: check.title, description: check.description, variant: 'destructive' });
+            return item;
+          }
+        }
         return {
           ...item,
           quantity: newQty,
@@ -682,6 +811,14 @@ export default function POSTerminal() {
       .map(item => {
         if (item.id !== itemId) return item;
         const nextQty = Math.max(0, Math.floor(qty));
+        const mi = items.find((x) => x.id === item.menuItemId);
+        if (mi) {
+          const check = canSetMenuItemQty(mi, nextQty);
+          if (!check.ok) {
+            toast({ title: check.title, description: check.description, variant: 'destructive' });
+            return item;
+          }
+        }
         return {
           ...item,
           quantity: nextQty,
@@ -826,9 +963,11 @@ export default function POSTerminal() {
   };
 
   const applyRecipeDeductionsOrThrow = async () => {
-    // Unit-blind deduction: assume recipe.ingredients[].requiredQty is already
-    // expressed in the base unit (KG / LTR) and is the amount needed per
-    // single menu item. Do not perform any divisions or unit conversions.
+    // POS-side precheck only:
+    // - direct SALE-linked items do not require recipes
+    // - non-direct items must have a manufacturing recipe
+    //
+    // Actual stock deduction is handled server-side via orderStore -> handle_order_stock_deduction.
     const toDeduct = orderItems.filter((i) => !i.isVoided && !i.sentToKitchen);
     if (!toDeduct.length) return;
 
@@ -847,52 +986,38 @@ export default function POSTerminal() {
     const recipeByParentId = new Map(recipes.map((r) => [String(r.parentItemId), r] as const));
     const recipeByCode = new Map(recipes.map((r) => [String(r.parentItemCode), r] as const));
     const menuById = new Map(items.map((mi) => [mi.id, mi] as const));
+    const saleProducedCodes = new Set(
+      (frontStock ?? [])
+        .filter((r) => String(r.locationTag ?? '').toUpperCase() === 'SALE')
+        .map((r) => String(r.producedCode ?? '').trim().toLowerCase())
+        .filter(Boolean)
+    );
 
-    const byItemId = new Map<string, number>();
     const missingRecipeForMenuItemIds: string[] = [];
-    const missingStockItemIds: string[] = [];
 
     for (const line of toDeduct) {
       const qty = Number.isFinite(line.quantity) ? line.quantity : 0;
       if (qty <= 0) continue;
 
       const menuItem = menuById.get(line.menuItemId);
-      const code = String(menuItem?.code ?? line.menuItemCode);
+      const directFrontStockLinked = Boolean((menuItem as any)?.physicalStockItemId);
+      const code = String(menuItem?.code ?? line.menuItemCode).trim();
+      const directProducedSaleLinked = Boolean(code) && saleProducedCodes.has(code.toLowerCase());
+      // Direct ready-to-sell link: no manufacturing recipe required in POS precheck.
+      // Backend dispatcher (handle_order_stock_deduction) handles SALE deduction.
+      if (directFrontStockLinked || directProducedSaleLinked) {
+        continue;
+      }
       const recipe = recipeByParentId.get(line.menuItemId) ?? recipeByCode.get(code);
       if (!recipe) {
         missingRecipeForMenuItemIds.push(line.menuItemId);
         continue;
       }
 
-      for (const ing of recipe.ingredients ?? []) {
-        const req = Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
-        if (req <= 0) continue;
-        const add = req * qty; // unit-blind multiply
-        byItemId.set(ing.ingredientId, (byItemId.get(ing.ingredientId) ?? 0) + add);
-      }
     }
 
     if (missingRecipeForMenuItemIds.length) {
       throw new RecipeIncompleteError(missingRecipeForMenuItemIds[0]!, ['NO_MANUFACTURING_RECIPE']);
-    }
-
-    const deductions = Array.from(byItemId.entries()).map(([itemId, qty]) => ({ itemId, qty }));
-    console.debug('[POS] prepared unit-blind deductions', { deductions });
-
-    for (const d of deductions) {
-      if (!getStockItemById(d.itemId)) missingStockItemIds.push(d.itemId);
-    }
-    if (missingStockItemIds.length) {
-      throw new RecipeIncompleteError('STOCK_ITEMS_MISSING', missingStockItemIds.slice(0, 10));
-    }
-
-    const res = await deductStockItemsRemote(deductions as any);
-    if (res.ok !== true) {
-      const first = (res as any).insufficient?.[0];
-      if (first) {
-        throw new InsufficientStockError(first.itemId, first.requiredQty, first.onHandQty);
-      }
-      throw new InsufficientStockError('unknown', 0, 0);
     }
   };
 
@@ -903,13 +1028,6 @@ export default function POSTerminal() {
       setShowRecipeError(true);
       return;
     }
-    if (e instanceof InsufficientStockError) {
-      setRecipeError('Insufficient Stock');
-      setRecipeErrorDetail(`${e.stockItemId}: required ${e.requiredQty}, on hand ${e.onHandQty}`);
-      setShowRecipeError(true);
-      return;
-    }
-
     setRecipeError('Inventory Deduction Failed');
     setRecipeErrorDetail(e instanceof Error ? e.message : 'Unknown error');
     setShowRecipeError(true);

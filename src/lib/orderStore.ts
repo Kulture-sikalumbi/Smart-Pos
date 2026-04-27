@@ -200,26 +200,78 @@ async function sendOrderToSupabase(order: Order) {
     throw e;
   }
 
-  // Attempt to compute recipe ingredient deductions client-side and call
-  // the atomic array RPC to apply stock deductions and insert ledger rows.
+  // Delegate inventory deduction per sold item to backend dispatcher:
+  // handle_order_stock_deduction routes by direct SALE link, produced_code SALE,
+  // or recipe(MANUFACTURING) fallback.
   try {
     await ensureRecipesLoaded();
     const recipes = getManufacturingRecipesSnapshot();
-    // Call per-item RPC to deduct ingredients for each sold menu item.
+    const failedDeductions: Array<{ menuItemId: string; menuItemCode?: string; reason: string }> = [];
+
+    // Call per-item RPC for every item. Do not gate on local recipe presence,
+    // because backend also supports direct SALE / produced_code deduction paths.
     for (const it of order.items) {
       const match = recipes.find((r) => r.parentItemId === String(it.menuItemId) || String(r.parentItemCode) === String(it.menuItemCode));
-      if (!match) {
-        console.debug('[orderStore] no recipe found for item', it.menuItemId, it.menuItemCode);
-        continue;
-      }
+      if (!match) console.debug('[orderStore] no local recipe match (backend dispatcher still runs)', it.menuItemId, it.menuItemCode);
 
       try {
         const { data: rpcData, error: rpcErr } = await supabase!.rpc('handle_order_stock_deduction', { p_menu_item_id: it.menuItemId, p_qty_sold: it.quantity });
-        if (rpcErr) console.warn('[orderStore] handle_order_stock_deduction rpc failed for', it.menuItemId, rpcErr);
-        else console.debug('[orderStore] handle_order_stock_deduction result', rpcData);
+        if (rpcErr) {
+          console.warn('[orderStore] handle_order_stock_deduction rpc failed for', it.menuItemId, rpcErr);
+          failedDeductions.push({ menuItemId: it.menuItemId, menuItemCode: it.menuItemCode, reason: String((rpcErr as any)?.message ?? 'rpc_error') });
+          continue;
+        }
+        if (rpcData && typeof rpcData === 'object' && (rpcData as any).ok === false) {
+          const reason = String((rpcData as any).error ?? 'deduction_failed');
+          console.warn('[orderStore] handle_order_stock_deduction returned not-ok', { menuItemId: it.menuItemId, rpcData });
+
+          // Safety fallback:
+          // If backend recipe lookup fails but we have a local recipe match,
+          // execute MANUFACTURING deductions directly against front_stock.
+          if ((reason === 'no_recipe_found' || reason === 'no_ingredients') && match && currentBrandId) {
+            try {
+              const outputQty = Number(match.outputQty) > 0 ? Number(match.outputQty) : 1;
+              const multiplier = (Number(it.quantity) || 0) / outputQty;
+              const fallbackDeductions = (match.ingredients ?? [])
+                .map((ing: any) => ({
+                  itemId: String(ing.ingredientId),
+                  qty: (Number(ing.requiredQty) || 0) * multiplier,
+                }))
+                .filter((d) => d.itemId && Number.isFinite(d.qty) && d.qty > 0);
+
+              if (fallbackDeductions.length > 0) {
+                const { data: fbData, error: fbErr } = await supabase!.rpc('handle_stock_deductions_front_stock', {
+                  p_brand_id: currentBrandId,
+                  p_location_tag: 'MANUFACTURING',
+                  p_deductions: fallbackDeductions,
+                } as any);
+
+                if (!fbErr && fbData && typeof fbData === 'object' && (fbData as any).ok !== false) {
+                  console.debug('[orderStore] fallback MANUFACTURING deduction succeeded', { menuItemId: it.menuItemId, fbData });
+                  continue;
+                }
+                const fbReason = fbErr ? String((fbErr as any).message ?? 'fallback_rpc_error') : String((fbData as any)?.error ?? 'fallback_not_ok');
+                failedDeductions.push({ menuItemId: it.menuItemId, menuItemCode: it.menuItemCode, reason: fbReason });
+                continue;
+              }
+            } catch (fbEx) {
+              failedDeductions.push({ menuItemId: it.menuItemId, menuItemCode: it.menuItemCode, reason: String((fbEx as any)?.message ?? 'fallback_exception') });
+              continue;
+            }
+          }
+
+          failedDeductions.push({ menuItemId: it.menuItemId, menuItemCode: it.menuItemCode, reason });
+          continue;
+        }
+        console.debug('[orderStore] handle_order_stock_deduction result', rpcData);
       } catch (e) {
         console.warn('[orderStore] deduction rpc exception for', it.menuItemId, e);
+        failedDeductions.push({ menuItemId: it.menuItemId, menuItemCode: it.menuItemCode, reason: String((e as any)?.message ?? 'rpc_exception') });
       }
+    }
+
+    if (failedDeductions.length > 0) {
+      console.error('[orderStore] one or more item deductions failed', { orderId: order.id, failedDeductions });
     }
   } catch (e) {
     console.warn('[orderStore] deduction processing error', e);

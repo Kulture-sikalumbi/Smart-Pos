@@ -13,6 +13,7 @@ export type FrontStockRow = {
   locationTag: string;
   quantity: number;
   unit: string;
+  reorderLevel?: number;
   updatedAt: string | null;
   itemCode?: string;
   itemName?: string;
@@ -27,12 +28,17 @@ function storageKeyForBrand(brandId: string | null) {
 let listeners: Listener[] = [];
 let state: FrontStockRow[] | null = null;
 let initialized = false;
+let realtimeUnsub: (() => void) | null = null;
+let focusWired = false;
 let currentBrandId: string | null = getActiveBrandId();
 
 subscribeActiveBrandId(() => {
   currentBrandId = getActiveBrandId();
   state = null;
   initialized = false;
+  try { realtimeUnsub?.(); } catch {}
+  realtimeUnsub = null;
+  focusWired = false;
   emit();
 });
 
@@ -78,20 +84,10 @@ async function fetchFromDb() {
       return;
     }
 
-    let frontRows: any[] | null = null;
-    let frontErr: any = null;
-    ({ data: frontRows, error: frontErr } = await supabase
+    const { data: frontRows, error: frontErr } = await supabase
       .from('front_stock')
-      .select('id, brand_id, item_id, menu_item_id, produced_code, produced_name, location_tag, quantity, unit, updated_at')
-      .eq('brand_id', brandId));
-
-    // Backward-compatible retry in case one of the newer columns is not deployed yet.
-    if (frontErr) {
-      ({ data: frontRows, error: frontErr } = await supabase
-        .from('front_stock')
-        .select('id, brand_id, item_id, produced_code, produced_name, location_tag, quantity, unit, updated_at')
-        .eq('brand_id', brandId));
-    }
+      .select('id, brand_id, item_id, produced_code, produced_name, location_tag, quantity, unit, reorder_level, updated_at')
+      .eq('brand_id', brandId);
 
     if (frontErr) {
       console.warn('[frontStockStore] failed to fetch front_stock', frontErr);
@@ -102,12 +98,12 @@ async function fetchFromDb() {
       id: String(r.id),
       brandId: String(r.brand_id),
       itemId: r.item_id ? String(r.item_id) : '',
-      menuItemId: r.menu_item_id ? String(r.menu_item_id) : undefined,
       producedCode: r.produced_code ? String(r.produced_code) : undefined,
       producedName: r.produced_name ? String(r.produced_name) : undefined,
       locationTag: String(r.location_tag),
       quantity: typeof r.quantity === 'number' ? r.quantity : parseFloat(r.quantity ?? 0) || 0,
       unit: String(r.unit ?? ''),
+      reorderLevel: r.reorder_level === null || r.reorder_level === undefined ? undefined : (typeof r.reorder_level === 'number' ? r.reorder_level : parseFloat(r.reorder_level) || 0),
       updatedAt: r.updated_at ? String(r.updated_at) : null,
       // Null-safe fallback for produced goods rows
       itemName: r.produced_name ? String(r.produced_name) : undefined,
@@ -155,6 +151,22 @@ export function subscribeFrontStock(listener: Listener) {
   if (!initialized) {
     initialized = true;
     if (isSupabaseConfigured() && supabase && currentBrandId) void fetchFromDb();
+    // Keep front_stock fresh globally (not just on the FrontOfficeStock page).
+    try {
+      realtimeUnsub = subscribeToRealtimeFrontStock();
+    } catch {
+      realtimeUnsub = null;
+    }
+    // Refresh when tab regains focus/visibility to avoid stale localStorage snapshots.
+    if (!focusWired && typeof window !== 'undefined') {
+      focusWired = true;
+      const onVisibilityOrFocus = () => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+        void fetchFromDb();
+      };
+      window.addEventListener('focus', onVisibilityOrFocus);
+      try { document.addEventListener('visibilitychange', onVisibilityOrFocus); } catch {}
+    }
   }
   return () => {
     listeners = listeners.filter((l) => l !== listener);

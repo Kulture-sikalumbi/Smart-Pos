@@ -439,6 +439,11 @@ export async function upsertPosMenuItem(item: POSMenuItem): Promise<void> {
       await refreshFromSupabase();
       return;
     } catch (e) {
+      // If ERP schema is not exposed in this Supabase project, fall back quietly.
+      const msg = String((e as any)?.error?.message ?? (e as any)?.message ?? '');
+      if (!/Invalid schema:\s*erp/i.test(msg)) {
+        console.debug('[posMenuStore] erp upsert skipped, falling back to public.products', e);
+      }
       // fallback to public.products
     }
 
@@ -462,10 +467,39 @@ export async function upsertPosMenuItem(item: POSMenuItem): Promise<void> {
     // Debug logging: show the payload and server response when an upsert fails
     try {
       console.debug('[posMenuStore] upsert products payload', pubPayload);
-      const { data: pubData, error: pubErr, status: pubStatus } = await supabase!.from('products').upsert(pubPayload).select();
+      let { data: pubData, error: pubErr, status: pubStatus } = await supabase!.from('products').upsert(pubPayload).select();
+
+      // Handle duplicate code collisions gracefully:
+      // - if same brand already has this code, update that row instead of failing
+      // - otherwise ask user to choose a different code
+      if (pubErr && String((pubErr as any).code ?? '') === '23505' && String((pubErr as any).message ?? '').toLowerCase().includes('products_code_ux')) {
+        const conflictCode = String(pubPayload.code ?? '').trim();
+        if (conflictCode) {
+          const { data: existingByCode, error: existingErr } = await supabase!
+            .from('products')
+            .select('id, brand_id')
+            .eq('code', conflictCode)
+            .eq('brand_id', currentBrandId)
+            .maybeSingle();
+
+          if (!existingErr && existingByCode?.id) {
+            const retryPayload = { ...pubPayload, id: existingByCode.id };
+            const retry = await supabase!.from('products').upsert(retryPayload).select();
+            pubData = retry.data as any;
+            pubErr = retry.error as any;
+            pubStatus = retry.status as any;
+          } else {
+            throw {
+              code: 'MENU_CODE_EXISTS',
+              message: `Menu item code "${conflictCode}" already exists. Use a different code.`,
+            };
+          }
+        }
+      }
+
       if (pubErr) {
         console.error('[posMenuStore] upsert menu item failed (public)', { status: pubStatus, error: pubErr, data: pubData, payload: pubPayload });
-        throw pubErr;
+        throw pubErr as any;
       }
     } catch (e) {
       // Re-throw so callers receive the original error while still logging

@@ -228,6 +228,9 @@ export default function StockIssues() {
       if (touched) {
         if (!item) errors.push('Select an item.');
         if (!(qty > 0)) errors.push('Enter an issue quantity > 0.');
+        if (item?.unitType === 'EACH' && !Number.isInteger(qty)) {
+          errors.push('Whole numbers only for EACH items (no decimals).');
+        }
         if (item) {
           const onHand = Number.isFinite(item.currentStock) ? item.currentStock : 0;
           if (baseQty > onHand + eps) errors.push(`Insufficient stock (on hand: ${onHand}).`);
@@ -513,7 +516,8 @@ export default function StockIssues() {
                                 <Label>Qty</Label>
                                 <Input
                                   type="number"
-                                  step="0.01"
+                                  step={item?.unitType === 'EACH' ? '1' : '0.01'}
+                                  min={item?.unitType === 'EACH' ? '1' : '0.01'}
                                   placeholder="0"
                                   value={l.qty}
                                   className={cn(invalid && 'border-destructive')}

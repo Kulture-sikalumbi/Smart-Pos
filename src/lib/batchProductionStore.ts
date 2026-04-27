@@ -217,6 +217,9 @@ export async function recordBatchProduction(params: {
     producedBy: params.producedBy,
   });
 
+  // Ensure we are prechecking against fresh DB state (avoid stale localStorage snapshot).
+  try { await refreshFrontStock(); } catch {}
+
   // Pre-check against front_stock(MANUFACTURING) so errors guide the user correctly.
   const manufacturingRows = getFrontStockSnapshot().filter((r) => String(r.locationTag).toUpperCase() === 'MANUFACTURING');
   const mByItemId = new Map(manufacturingRows.map((r) => [String(r.itemId), Number(r.quantity ?? 0) || 0] as const));
@@ -259,7 +262,16 @@ export async function recordBatchProduction(params: {
         p_ingredients: ingredientsPayload,
       } as any);
 
-      if (rpcErr) throw new Error(String(rpcErr.message ?? rpcErr));
+      if (rpcErr) {
+        // Replace ingredient UUIDs in the error with friendly names when possible.
+        const msg = String(rpcErr.message ?? rpcErr);
+        const byId = new Map(nextBatch.ingredientsUsed.map((i) => [String(i.ingredientId), String(i.ingredientName ?? '')] as const));
+        const rewritten = msg.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, (id) => {
+          const name = byId.get(id);
+          return name ? `${name} (${id.slice(0, 8)})` : id;
+        });
+        throw new Error(rewritten);
+      }
       nextBatch.id = String(batchId ?? nextBatch.id);
       // Force immediate stock refresh so UI reflects batch output instantly.
       try { await refreshFrontStock(); } catch {}

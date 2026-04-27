@@ -319,7 +319,7 @@ export function RecipeEditorDialog(props: {
   const [parentItemId, setParentItemId] = useState(editing?.parentItemId ?? '');
   const [autoLinkedCode, setAutoLinkedCode] = useState<string | null>(null);
   const [finishedDept, setFinishedDept] = useState<DepartmentId>((editing?.finishedGoodDepartmentId ?? '') as DepartmentId);
-  const [outputQty, setOutputQty] = useState<number | ''>(editing?.outputQty ?? '');
+  const [outputQty, setOutputQty] = useState<number | ''>(editing?.outputQty ?? 1);
   const [outputUnitType, setOutputUnitType] = useState<UnitType>((editing?.outputUnitType ?? 'EACH') as UnitType);
   const [ingredients, setIngredients] = useState<DraftIngredient[]>(
     (editing?.ingredients ?? []).map((i) => ({ id: i.id, ingredientId: i.ingredientId, requiredQty: i.requiredQty }))
@@ -328,6 +328,7 @@ export function RecipeEditorDialog(props: {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [conversionHelper, setConversionHelper] = useState<Record<string, string>>({});
   const [isSaving, setIsSaving] = useState(false);
+  const [validationMessage, setValidationMessage] = useState<string | null>(null);
 
   // Reset when opening or changing edit target
   useEffect(() => {
@@ -337,7 +338,7 @@ export function RecipeEditorDialog(props: {
     setParentItemId(editing?.parentItemId ?? initialValues?.parentItemId ?? '');
     setAutoLinkedCode(null);
     setFinishedDept((editing?.finishedGoodDepartmentId ?? initialValues?.finishedGoodDepartmentId ?? (departmentsList.length ? departmentsList[0].id : '')) as DepartmentId);
-    setOutputQty(editing?.outputQty ?? '');
+    setOutputQty(editing?.outputQty ?? 1);
     setOutputUnitType((editing?.outputUnitType ?? 'EACH') as UnitType);
     const mapUnitTypeToUnit = (u: UnitType | undefined): string => {
       switch (u) {
@@ -350,6 +351,7 @@ export function RecipeEditorDialog(props: {
       }
     };
     setIngredients((editing?.ingredients ?? []).map((i) => ({ id: i.id, ingredientId: i.ingredientId, requiredQty: i.requiredQty || '', unit: (i as any).unit ?? getStockUnit(byId.get(i.ingredientId)) ?? mapUnitTypeToUnit(i.unitType) })));
+    setValidationMessage(null);
   }, [open, editing?.id, departmentsList, initialValues?.parentItemCode, initialValues?.parentItemName]);
 
   const nameMatches = useMemo(() => {
@@ -448,10 +450,28 @@ export function RecipeEditorDialog(props: {
   const save = async () => {
     const trimmedName = name.trim();
     const trimmedCode = code.trim();
-    if (!trimmedName || !trimmedCode) return;
-    if (outputQty === '' || outputQty <= 0) return;
+    const validationErrors: string[] = [];
+    if (!trimmedName) validationErrors.push('Name is required.');
+    if (!trimmedCode) validationErrors.push('Code is required.');
+    if (!(typeof outputQty === 'number' && Number.isFinite(outputQty) && outputQty > 0)) validationErrors.push('Output Qty must be greater than 0.');
+    if (!ingredients.length) validationErrors.push('Add at least one ingredient.');
+
+    if (ingredients.length) {
+      for (const i of ingredients) {
+        const s = byId.get(i.ingredientId);
+        const qty = typeof i.requiredQty === 'number' && Number.isFinite(i.requiredQty) ? i.requiredQty : 0;
+        if (!s) validationErrors.push('One or more ingredients are invalid. Re-select ingredient(s).');
+        if (!(qty > 0)) validationErrors.push(`Ingredient quantity must be > 0 (${s?.name ?? i.ingredientId}).`);
+      }
+    }
+
+    if (validationErrors.length) {
+      setValidationMessage(validationErrors[0]);
+      return;
+    }
 
     setIsSaving(true);
+    setValidationMessage(null);
     try {
 
     // Validation: for KG/LTRS stock items the ingredient must use a mass/liquid unit
@@ -463,7 +483,7 @@ export function RecipeEditorDialog(props: {
         const okKg = s.unitType === 'KG' && (ingUnit === 'g' || ingUnit === 'kg');
         const okLtr = s.unitType === 'LTRS' && (ingUnit === 'ml' || ingUnit === 'l');
         if (!(okKg || okLtr)) {
-          alert('Please select a mass/liquid unit for this ingredient.');
+          setValidationMessage('Please select a mass/liquid unit for each ingredient.');
           return;
         }
       }
@@ -675,6 +695,11 @@ export function RecipeEditorDialog(props: {
         </div>
 
         <DataTableWrapper>
+          {validationMessage ? (
+            <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {validationMessage}
+            </div>
+          ) : null}
           {lowIngredients.length > 0 ? (
             <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               <div className="font-medium">Low Manufacturing stock detected</div>

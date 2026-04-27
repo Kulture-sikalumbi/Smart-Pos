@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useSyncExternalStore } from 'react';
 import { useParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -6,11 +6,11 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import type { OrderItem } from '@/types/pos';
 import { addOrder } from '@/lib/orderStore';
-import { InsufficientStockError, RecipeIncompleteError } from '@/lib/recipeEngine';
+import { RecipeIncompleteError } from '@/lib/recipeEngine';
 import { getManufacturingRecipesSnapshot } from '@/lib/manufacturingRecipeStore';
-import { applyStockDeductions, getStockItemById } from '@/lib/stockStore';
 import { usePosMenu } from '@/hooks/usePosMenu';
 import { useCurrency } from '@/contexts/CurrencyContext';
+import { getFrontStockSnapshot, subscribeFrontStock } from '@/lib/frontStockStore';
 
 export default function SelfOrder() {
   const { formatMoneyPrecise } = useCurrency();
@@ -23,6 +23,7 @@ export default function SelfOrder() {
   const [selectedCategory, setSelectedCategory] = useState<string>(categories[0]?.id ?? 'breads');
   const [cart, setCart] = useState<OrderItem[]>([]);
   const [message, setMessage] = useState<string | null>(null);
+  const frontStock = useSyncExternalStore(subscribeFrontStock, getFrontStockSnapshot);
 
   const items = useMemo(() => menuItems.filter(i => i.categoryId === selectedCategory && i.isAvailable), [menuItems, selectedCategory]);
 
@@ -78,9 +79,12 @@ export default function SelfOrder() {
       const recipes = getManufacturingRecipesSnapshot();
       const recipeByCode = new Map(recipes.map((r) => [String(r.parentItemCode), r] as const));
       const menuById = new Map(menuItems.map((m) => [m.id, m] as const));
-
-      const byItemId = new Map<string, number>();
-      const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+      const saleProducedCodes = new Set(
+        (frontStock ?? [])
+          .filter((r) => String(r.locationTag ?? '').toUpperCase() === 'SALE')
+          .map((r) => String(r.producedCode ?? '').trim().toLowerCase())
+          .filter(Boolean)
+      );
 
       for (const line of cart) {
         const mi = menuById.get(line.menuItemId);
@@ -88,44 +92,14 @@ export default function SelfOrder() {
         const qty = Number.isFinite(line.quantity) ? line.quantity : 0;
         if (qty <= 0) continue;
 
-        const fgId = `fg-${code}`;
-        const fg = getStockItemById(fgId);
-        const recipe = recipeByCode.get(code);
-
-        const track = mi?.trackInventory ?? Boolean(fg || recipe);
-        if (!track) continue;
-
-        if (fg && Number.isFinite(fg.currentStock) && fg.currentStock >= qty - 1e-9) {
-          byItemId.set(fgId, round2((byItemId.get(fgId) ?? 0) + qty));
+        const directFrontStockLinked = Boolean((mi as any)?.physicalStockItemId);
+        const directProducedSaleLinked = Boolean(code && saleProducedCodes.has(String(code).trim().toLowerCase()));
+        if (directFrontStockLinked || directProducedSaleLinked) {
           continue;
         }
 
-        if (!recipe) {
-          throw new RecipeIncompleteError(line.menuItemId, ['NO_MANUFACTURING_RECIPE']);
-        }
-
-        const outputQty = recipe.outputQty > 0 ? recipe.outputQty : 1;
-        const multiplier = qty / outputQty;
-        for (const ing of recipe.ingredients) {
-          const requiredQty = round2((Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0) * multiplier);
-          if (requiredQty <= 0) continue;
-          byItemId.set(ing.ingredientId, round2((byItemId.get(ing.ingredientId) ?? 0) + requiredQty));
-        }
-      }
-
-      const deductions = Array.from(byItemId.entries()).map(([itemId, qty]) => ({ itemId, qty }));
-
-      for (const d of deductions) {
-        if (!getStockItemById(d.itemId)) {
-          throw new RecipeIncompleteError('STOCK_ITEMS_MISSING', [d.itemId]);
-        }
-      }
-
-      const res = applyStockDeductions(deductions);
-      if (res.ok !== true) {
-        const first = res.insufficient[0];
-        if (first) throw new InsufficientStockError(first.itemId, first.requiredQty, first.onHandQty);
-        throw new InsufficientStockError('unknown', 0, 0);
+        const recipe = recipeByCode.get(String(code));
+        if (!recipe) throw new RecipeIncompleteError(line.menuItemId, ['NO_MANUFACTURING_RECIPE']);
       }
 
       addOrder({
@@ -148,10 +122,6 @@ export default function SelfOrder() {
     } catch (e) {
       if (e instanceof RecipeIncompleteError) {
         setMessage(`Recipe incomplete: ${e.menuItemId}. Manager must complete the recipe.`);
-        return;
-      }
-      if (e instanceof InsufficientStockError) {
-        setMessage(`Out of stock: ${e.stockItemId}. Please call waiter.`);
         return;
       }
       setMessage(e instanceof Error ? e.message : 'Failed to submit order');

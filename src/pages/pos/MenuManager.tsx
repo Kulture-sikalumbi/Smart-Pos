@@ -7,12 +7,11 @@ import { Button } from '@/components/ui/button';
 import { Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Trash2, Plus, Pencil, RotateCcw, Upload, Check, ChevronsUpDown } from 'lucide-react';
 import type { POSCategory, POSMenuItem } from '@/types/pos';
-import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes, upsertManufacturingRecipe, getManufacturingRecipeById } from '@/lib/manufacturingRecipeStore';
+import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes, getManufacturingRecipeById } from '@/lib/manufacturingRecipeStore';
 import { getStockItemsSnapshot, subscribeStockItems } from '@/lib/stockStore';
 import { RecipeEditorDialog } from '@/pages/manufacturing/Recipes';
 import { getPosMenuItemsSnapshot, subscribePosMenu } from '@/lib/posMenuStore';
@@ -21,7 +20,6 @@ import { isSupabaseConfigured, supabase, SUPABASE_BUCKET } from '@/lib/supabaseC
 import { usePosMenu } from '@/hooks/usePosMenu';
 import { deletePosCategory, deletePosMenuItem, resetPosMenuToDefaults, upsertPosCategory, upsertPosMenuItem } from '@/lib/posMenuStore';
 import { useAuth } from '@/contexts/AuthContext';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { toast } from '@/hooks/use-toast';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from '@/components/ui/command';
 import { cn } from '@/lib/utils';
@@ -54,9 +52,6 @@ const MenuManager: React.FC = () => {
   const categories = categoriesSnap.categories;
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string | undefined>(undefined);
-  const [isRetail, setIsRetail] = useState(false);
-  const [selectedStockId, setSelectedStockId] = useState<string | undefined>(undefined);
-  const [searchStockTerm, setSearchStockTerm] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [recipeModalOpen, setRecipeModalOpen] = useState(false);
   const [recipeModalMessage, setRecipeModalMessage] = useState<string | null>(null);
@@ -66,22 +61,80 @@ const MenuManager: React.FC = () => {
   const [validationMessage, setValidationMessage] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [stockSuggestionsOpen, setStockSuggestionsOpen] = useState(false);
-  const [confirmRetailModalOpen, setConfirmRetailModalOpen] = useState(false);
-  const [pendingStockSelection, setPendingStockSelection] = useState<any>(null);
+  const [nameSuggestionsOpen, setNameSuggestionsOpen] = useState(false);
+  const [showUnmatchedNameHint, setShowUnmatchedNameHint] = useState(false);
   const saleFrontStockOptions = useMemo(() => {
     const byId = new Map(stockItems.map((s) => [String(s.id), s] as const));
     return (frontStock ?? [])
       .filter((r) => String(r.locationTag).toUpperCase() === 'SALE')
       .map((r) => {
         const meta = byId.get(String(r.itemId));
+        const name = String(meta?.name ?? r.itemName ?? r.producedName ?? r.itemId ?? '').trim();
+        const code = String(meta?.code ?? r.itemCode ?? r.producedCode ?? '').trim();
+        const physicalItemId = String(r.itemId ?? '').trim() || undefined;
+        const optionId = physicalItemId ?? `produced:${String(r.producedCode ?? r.id ?? '').trim() || String(r.id)}`;
         return {
-          itemId: String(r.itemId),
-          label: `${meta?.name ?? r.itemName ?? r.itemId} (${meta?.code ?? r.itemCode ?? 'N/A'})`,
+          optionId,
+          physicalItemId,
+          name,
+          code,
+          label: `${name}${code ? ` (${code})` : ''}`,
           onHand: Number(r.quantity ?? 0) || 0,
         };
       })
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [frontStock, stockItems]);
+  const safeRecipeOptions = useMemo(
+    () =>
+      recipes
+        .map((r) => ({
+          ...r,
+          optionValue: String(r.parentItemCode || r.id || '').trim(),
+        }))
+        .filter((r) => r.optionValue.length > 0),
+    [recipes]
+  );
+  const safeCategoryOptions = useMemo(
+    () =>
+      categories
+        .map((c) => ({
+          ...c,
+          optionValue: String(c.id || '').trim(),
+        }))
+        .filter((c) => c.optionValue.length > 0),
+    [categories]
+  );
+  const safeSaleFrontStockOptions = useMemo(
+    () => saleFrontStockOptions.filter((o) => String(o.optionId || '').trim().length > 0),
+    [saleFrontStockOptions]
+  );
+  const saleSuggestionMatchedByCode = useMemo(() => {
+    const code = String((form as any).code ?? '').trim().toLowerCase();
+    if (!code) return null;
+    return safeSaleFrontStockOptions.find((o) => String(o.code ?? '').trim().toLowerCase() === code) ?? null;
+  }, [form, safeSaleFrontStockOptions]);
+  const saleSuggestionMatchedByName = useMemo(() => {
+    const name = String(form.name ?? '').trim().toLowerCase();
+    if (!name) return null;
+    return safeSaleFrontStockOptions.find((o) => String(o.name ?? '').trim().toLowerCase() === name) ?? null;
+  }, [form.name, safeSaleFrontStockOptions]);
+  const hasReadySaleMatch = Boolean(saleSuggestionMatchedByCode || saleSuggestionMatchedByName);
+  const matchedSaleOption = saleSuggestionMatchedByCode ?? saleSuggestionMatchedByName ?? null;
+  const filteredSaleNameOptions = useMemo(() => {
+    const q = String(form.name ?? '').trim().toLowerCase();
+    return safeSaleFrontStockOptions
+      .filter((o) => {
+        if (!q) return true;
+        return o.label.toLowerCase().includes(q) || String(o.name ?? '').toLowerCase().includes(q);
+      })
+      .slice(0, 15);
+  }, [form.name, safeSaleFrontStockOptions]);
+  const directSaleLinkValue = useMemo(() => {
+    const physical = String((form as any).physicalStockItemId ?? '').trim();
+    if (physical) return physical;
+    if (matchedSaleOption) return String(matchedSaleOption.optionId);
+    return '__none__';
+  }, [form, matchedSaleOption]);
   const errs = useMemo(() => {
     const errs: string[] = [];
     const name = String(form.name ?? '').trim();
@@ -89,9 +142,8 @@ const MenuManager: React.FC = () => {
     if (!name) errs.push('Name is required.');
     if (!Number.isFinite(price) || price <= 0) errs.push('Price must be a number greater than 0.');
     if (!((form as any).image)) errs.push('Please upload an image for the menu item (from Storage).');
-    if (isRetail && !selectedStockId) errs.push('Select a stock item when Retail is enabled.');
     return errs;
-  }, [form, isRetail, selectedStockId]);
+  }, [form]);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -170,6 +222,13 @@ const MenuManager: React.FC = () => {
   }, []);
 
   const handleSave = async () => {
+    if (String(form.name ?? '').trim() && !hasReadySaleMatch && !String((form as any).physicalStockItemId ?? '').trim() && !String((form as any).code ?? '').trim()) {
+      setShowUnmatchedNameHint(true);
+      toast({
+        title: 'Custom item name detected',
+        description: 'This name does not match ready-to-sell stock. Link a recipe or direct SALE stock before final use.',
+      });
+    }
     // Validate before attempting save
     if (errs.length) {
       setValidationMessage(errs.join('\n'));
@@ -209,37 +268,6 @@ const MenuManager: React.FC = () => {
 
       await upsertPosMenuItem(payload);
 
-      // If this is a retail-ready item, create a simple 1:1 manufacturing recipe linking to selected stock
-      if (isRetail && selectedStockId) {
-        try {
-          const stock = stockItems.find((s) => s.id === selectedStockId);
-          const created = await upsertManufacturingRecipe({
-            parentItemCode: payload.code,
-            parentItemName: payload.name,
-            parentItemId: payload.id,
-            outputQty: 1,
-            outputUnitType: 'EACH',
-            ingredients: [
-              {
-                ingredientId: selectedStockId,
-                requiredQty: 1,
-                ingredientName: stock?.name ?? '',
-              },
-            ],
-          } as any);
-          // Notify user via toast and modal about the auto-created retail recipe
-          try { toast({ title: 'Retail recipe created', description: `Linked to ${stock?.name ?? 'stock item'}` }); } catch {}
-          try {
-            setRecipeModalRecipeId(created?.id ?? null);
-            setRecipeModalMessage(`A retail recipe was automatically created and linked to "${stock?.name ?? 'stock item'}".`);
-            setRecipeModalOpen(true);
-          } catch {}
-        } catch (e) {
-          console.warn('Failed to auto-create retail recipe', e);
-          try { toast({ title: 'Retail recipe failed', description: 'Could not auto-create retail recipe.' }); } catch {}
-        }
-      }
-
       // reflect authoritative snapshot from store
       setItems(getPosMenuItemsSnapshot().map((i) => ({ id: i.id, name: i.name, price: i.price, image: i.image, description: (i as any).description })) as any);
     } catch (err) {
@@ -253,12 +281,7 @@ const MenuManager: React.FC = () => {
     setShowModal(false);
     setEditing(null);
     setForm({});
-    setIsRetail(false);
-    setSelectedStockId(undefined);
-    setSearchStockTerm('');
-    setStockSuggestionsOpen(false);
-    setConfirmRetailModalOpen(false);
-    setPendingStockSelection(null);
+    setNameSuggestionsOpen(false);
     setIsSaving(false);
   };
 
@@ -288,37 +311,14 @@ const MenuManager: React.FC = () => {
   const openAddModal = () => {
     setEditing(null);
     setForm({});
-    setIsRetail(false);
-    setSelectedStockId(undefined);
-    setSearchStockTerm('');
-    setStockSuggestionsOpen(false);
-    setConfirmRetailModalOpen(false);
-    setPendingStockSelection(null);
+    setNameSuggestionsOpen(false);
     setShowModal(true);
   };
 
   const openEditModal = (item: MenuItem) => {
     setEditing(item);
     setForm(item);
-    setStockSuggestionsOpen(false);
-    setConfirmRetailModalOpen(false);
-    setPendingStockSelection(null);
-    // try to detect if a recipe exists linked to this item and prefill retail/stock
-    try {
-      const linked = recipes.find(r => String(r.parentItemCode) === String((item as any).code));
-      if (linked) {
-        setIsRetail(true);
-        // Try to find first ingredient stock item for this recipe
-        const recipe = getManufacturingRecipesSnapshot().find(x => x.id === linked.id);
-        if (recipe && recipe.ingredients && recipe.ingredients.length) setSelectedStockId(recipe.ingredients[0].ingredientId);
-      } else {
-        setIsRetail(false);
-        setSelectedStockId(undefined);
-      }
-    } catch {
-      setIsRetail(false);
-      setSelectedStockId(undefined);
-    }
+    setNameSuggestionsOpen(false);
     setShowModal(true);
   };
 
@@ -332,12 +332,20 @@ const MenuManager: React.FC = () => {
           <span>Loading menu items…</span>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-3">
           {items.map((item) => {
           // Resolve image preview (storage path or remote URL)
           let imgSrc: string | undefined = undefined;
           // Find linked recipe (by matching code)
           const linkedRecipe = recipes.find(r => String(r.parentItemCode) === String((item as any).code));
+          const directSaleLinked = Boolean(String((item as any).physicalStockItemId ?? '').trim());
+          const producedSaleLinked = !directSaleLinked
+            && Boolean(
+              safeSaleFrontStockOptions.find(
+                (o) => String(o.code ?? '').trim().toLowerCase() === String((item as any).code ?? '').trim().toLowerCase()
+              )
+            );
+          const readyToSellLinked = directSaleLinked || producedSaleLinked;
           try {
             const img = (item as any).image;
             if (img) {
@@ -376,18 +384,43 @@ const MenuManager: React.FC = () => {
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="flex gap-3 items-start">
+                <div className="flex gap-3 items-center">
                   {imgSrc ? (
-                    <img src={imgSrc} alt={item.name} className="h-36 w-36 object-cover rounded-md shadow-sm flex-shrink-0" />
+                    <img src={imgSrc} alt={item.name} className="h-14 w-14 object-cover rounded-full shadow-sm flex-shrink-0" />
                   ) : (
-                    <div className="h-36 w-36 bg-muted-foreground/10 rounded-md flex items-center justify-center text-sm text-muted-foreground">No image</div>
+                    <div className="h-14 w-14 bg-muted-foreground/10 rounded-full flex items-center justify-center text-[10px] text-muted-foreground flex-shrink-0">
+                      No image
+                    </div>
                   )}
                   <div className="flex-1 min-w-0">
-                    <div className="text-muted-foreground font-medium">Price: {formatMoneyPrecise(Number(item.price), 2)}</div>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold">{formatMoneyPrecise(Number(item.price), 2)}</div>
+                      <div className="text-xs text-muted-foreground flex items-center gap-2">
+                        <span className={cn(
+                          'rounded-full border px-2 py-0.5',
+                          linkedRecipe && !readyToSellLinked ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-muted-foreground/20'
+                        )}>
+                          {linkedRecipe && !readyToSellLinked ? 'Recipe Linked' : linkedRecipe && readyToSellLinked ? 'Recipe (Ignored)' : 'No Recipe'}
+                        </span>
+                        <span className={cn(
+                          'rounded-full border px-2 py-0.5',
+                          readyToSellLinked ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-muted-foreground/20'
+                        )}>
+                          {readyToSellLinked ? 'Ready-to-Sell Linked' : 'No Direct SALE Link'}
+                        </span>
+                      </div>
+                    </div>
                     {(item as any).description ? (
-                      <div className="mt-2 text-sm text-muted-foreground break-words">{(item as any).description}</div>
+                      <div className="mt-1 text-xs text-muted-foreground break-words line-clamp-2">{(item as any).description}</div>
                     ) : null}
-                    <div className="mt-2 text-sm text-muted-foreground">Recipe: {linkedRecipe ? linkedRecipe.parentItemName : 'None'}</div>
+                    <div className="mt-1 text-[11px] text-muted-foreground">
+                      Deduction path:{' '}
+                      {readyToSellLinked
+                        ? 'Direct SALE stock (no recipe needed)'
+                        : linkedRecipe
+                          ? 'Recipe ingredients (MANUFACTURING)'
+                          : 'Not connected'}
+                    </div>
                   </div>
                 </div>
               </CardContent>
@@ -404,89 +437,104 @@ const MenuManager: React.FC = () => {
               <DialogTitle>{editing ? 'Edit Menu Item' : 'Add Menu Item'}</DialogTitle>
               <DialogDescription className="sr-only">Add or edit a menu item</DialogDescription>
             </div>
-            {!editing && !isRetail && (
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <Switch checked={isRetail} onCheckedChange={(v: any) => setIsRetail(Boolean(v))} />
-                  <div className="text-sm">Retail Item? (Link to Ready-to-Sell Stock) </div>
-                </div>
-              </div>
-            )}
           </DialogHeader>
 
           <div className="grid gap-3">
-            {isRetail && selectedStockId ? (
-              <div className="p-3 bg-blue-50 dark:bg-blue-950/20 rounded-md border border-blue-200 dark:border-blue-800">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="text-sm font-medium text-blue-900 dark:text-blue-100">Retail Item Linked</div>
-                    <div className="text-xs text-blue-700 dark:text-blue-300">
-                      Connected to stock item: {stockItems.find(s => s.id === selectedStockId)?.name}
-                    </div>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setIsRetail(false);
-                      setSelectedStockId(undefined);
-                      setSearchStockTerm('');
-                    }}
-                  >
-                    Change
-                  </Button>
-                </div>
-              </div>
-            ) : isRetail ? (
+            <div className="space-y-1">
+              <Label>Item Name</Label>
               <div className="relative">
-                <Label>Which stock item?</Label>
-                <input
-                  className="w-full px-3 py-2 rounded border bg-background text-sm"
-                  placeholder="Search stock..."
-                  value={searchStockTerm}
-                  onChange={(e) => setSearchStockTerm(e.target.value)}
-                />
-                <div className="absolute z-40 left-0 right-0 bg-card rounded mt-1 shadow max-h-40 overflow-auto">
-                  {stockItems.filter(s => {
-                    if (!searchStockTerm) return true;
-                    const q = searchStockTerm.toLowerCase();
-                    return String(s.name ?? '').toLowerCase().includes(q) || String((s as any).code ?? (s as any).item_code ?? '').toLowerCase().includes(q);
-                  }).slice(0,50).map(s => (
-                    <div key={s.id} className="px-3 py-2 hover:bg-accent cursor-pointer flex items-center justify-between" onClick={() => {
-                      setSelectedStockId(s.id);
-                      setSearchStockTerm(`${s.name} — ${((s as any).code ?? (s as any).item_code ?? s.id)}`);
-                      // When retail is enabled and a stock item is selected, prefill form fields
-                      try {
-                        const suggestedName = s.name ?? '';
-                        const suggestedCode = (s as any).code ?? (s as any).item_code ?? '';
-                        const suggestedPrice = (typeof (s as any).currentCost === 'number' ? (s as any).currentCost : undefined);
-                        setForm(prev => ({ ...prev, name: suggestedName, code: suggestedCode, price: suggestedPrice ?? prev.price, categoryId: (s as any).departmentId ?? prev.categoryId }));
-                      } catch {
-                        // ignore prefill errors
+                <Input
+                  value={String(form.name ?? '')}
+                  placeholder="Type item name (custom names allowed)..."
+                  onFocus={() => setNameSuggestionsOpen(true)}
+                  onBlur={() => window.setTimeout(() => setNameSuggestionsOpen(false), 120)}
+                  onChange={(e) =>
+                    setForm((prev) => {
+                      const typed = String(e.target.value ?? '');
+                      const activePhysical = String((prev as any).physicalStockItemId ?? '').trim();
+                      if (!activePhysical) return { ...prev, name: typed };
+                      const selected = safeSaleFrontStockOptions.find((o) => String(o.physicalItemId ?? '') === activePhysical);
+                      const selectedName = String(selected?.name ?? '').trim().toLowerCase();
+                      const typedName = typed.trim().toLowerCase();
+                      if (selected && typedName && typedName !== selectedName) {
+                        return { ...prev, name: typed, physicalStockItemId: undefined };
                       }
-                    }}>
-                      <div className="text-sm">{s.name}</div>
-                      <div className="text-xs text-muted-foreground">{Number(s.currentStock ?? 0).toFixed(2)}</div>
-                    </div>
-                  ))}
-                </div>
+                      return { ...prev, name: typed };
+                    })
+                  }
+                />
+                {nameSuggestionsOpen ? (
+                  <div className="absolute z-50 mt-1 w-full rounded-md border bg-popover text-popover-foreground shadow-md">
+                    <Command>
+                      <CommandInput
+                        value={String(form.name ?? '')}
+                        onValueChange={(value) => setForm((prev) => ({ ...prev, name: value }))}
+                        className="hidden"
+                      />
+                      <div className="px-2 py-2 text-xs text-muted-foreground">
+                        Suggestions from Front Office SALE stock. Keep typing to use a custom name.
+                      </div>
+                      <CommandEmpty>
+                        <div className="px-2 py-1 text-xs text-muted-foreground">
+                          No ready-to-sell match. Keep this custom name and optionally link a recipe below.
+                        </div>
+                      </CommandEmpty>
+                      <CommandGroup>
+                        {filteredSaleNameOptions.map((o) => (
+                          <CommandItem
+                            key={o.optionId}
+                            value={o.label}
+                            onMouseDown={(ev) => ev.preventDefault()}
+                            onSelect={() => {
+                              setForm((prev) => ({
+                                ...prev,
+                                name: o.name || prev.name,
+                                code: o.code || (prev as any).code,
+                                physicalStockItemId: o.physicalItemId,
+                              }));
+                              setShowUnmatchedNameHint(false);
+                              setNameSuggestionsOpen(false);
+                            }}
+                          >
+                            <Check className={cn('mr-2 h-4 w-4', String((form as any).physicalStockItemId ?? '') === String(o.physicalItemId ?? '') ? 'opacity-100' : 'opacity-0')} />
+                            <div className="flex flex-col">
+                              <span>{o.label}</span>
+                              <span className="text-xs text-muted-foreground">On hand: {o.onHand.toFixed(2)}</span>
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </Command>
+                  </div>
+                ) : null}
               </div>
-            ) : (
+              <div className="text-xs text-muted-foreground">
+                Selecting a SALE stock suggestion links direct one-to-one stock deduction.
+              </div>
+              {String(form.name ?? '').trim() && !hasReadySaleMatch ? (
+                <div className="flex items-center gap-2 text-xs text-emerald-700">
+                  <Check className="h-3.5 w-3.5" />
+                  Custom name is OK — just link a recipe or direct SALE stock below.
+                </div>
+              ) : null}
+            </div>
+
+            {!String((form as any).physicalStockItemId ?? '').trim() && !hasReadySaleMatch ? (
               <div className="space-y-1">
-                <Label>Link to Recipe (optional)</Label>
-                <Select value={(form as any).code ?? '__none__'} onValueChange={(v) => {
+                <Label>Link to Existing Recipe (optional)</Label>
+                <Select value={String((form as any).code ?? '').trim() || '__none__'} onValueChange={(v) => {
                   if (v === '__none__') { setForm({ ...form, code: '' }); return; }
                   const sel = recipes.find(r => r.parentItemCode === v || r.id === v);
-                  if (sel) setForm({ ...form, name: sel.parentItemName, code: sel.parentItemCode });
-                  else setForm({ ...form, code: v });
+                  if (sel) setForm({ ...form, name: sel.parentItemName, code: sel.parentItemCode, physicalStockItemId: undefined });
+                  else setForm({ ...form, code: v, physicalStockItemId: undefined });
                 }}>
                   <SelectTrigger>
                     <SelectValue placeholder="(none)" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="__none__">(none)</SelectItem>
-                    {recipes.map((r) => (
-                      <SelectItem key={r.id} value={r.parentItemCode || r.id}>{r.parentItemName} — {r.parentItemCode}</SelectItem>
+                    {safeRecipeOptions.map((r) => (
+                      <SelectItem key={r.id} value={r.optionValue}>{r.parentItemName} — {r.parentItemCode}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -496,11 +544,22 @@ const MenuManager: React.FC = () => {
                   </div>
                 ) : null}
               </div>
-            )}
+            ) : null}
+            {hasReadySaleMatch ? (
+              <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                This item matches ready-to-sell stock in SALE and will deduct from SALE quantity first.
+                Recipe linking is hidden to avoid double deduction.
+              </div>
+            ) : null}
+            {showUnmatchedNameHint && String(form.name ?? '').trim() && !hasReadySaleMatch ? (
+              <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                This item name does not match existing ready-to-sell stock. You can keep it as custom, but link it to an existing recipe or a direct SALE stock item.
+              </div>
+            ) : null}
 
             <div className="space-y-1">
               <Label>Category</Label>
-              <Select value={(form as any).categoryId ?? '__none__'} onValueChange={(v) => {
+              <Select value={String((form as any).categoryId ?? '').trim() || '__none__'} onValueChange={(v) => {
                 if (v === '__none__') { setForm({ ...form, categoryId: undefined }); return; }
                 setForm({ ...form, categoryId: v });
               }}>
@@ -509,8 +568,8 @@ const MenuManager: React.FC = () => {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__none__">(none)</SelectItem>
-                  {categories.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                  {safeCategoryOptions.map((c) => (
+                    <SelectItem key={c.id} value={c.optionValue}>{c.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -519,13 +578,32 @@ const MenuManager: React.FC = () => {
             <div className="space-y-1">
               <Label>Direct SALE Stock Link (optional)</Label>
               <Select
-                value={(form as any).physicalStockItemId ?? '__none__'}
+                value={directSaleLinkValue}
                 onValueChange={(v) => {
                   if (v === '__none__') {
                     setForm({ ...form, physicalStockItemId: undefined });
                     return;
                   }
-                  setForm({ ...form, physicalStockItemId: v });
+                  const sel = safeSaleFrontStockOptions.find((o) => String(o.optionId) === String(v));
+                  if (sel && String(sel.physicalItemId ?? '').trim()) {
+                    setForm({
+                      ...form,
+                      name: sel.name || form.name,
+                      code: sel.code || (form as any).code,
+                      physicalStockItemId: String(sel.physicalItemId),
+                    });
+                    return;
+                  }
+                  // manufactured/produced SALE items have no physical stock id; link via code (produced_code)
+                  if (sel && String(sel.code ?? '').trim()) {
+                    setForm({
+                      ...form,
+                      name: sel.name || form.name,
+                      code: String(sel.code).trim(),
+                      physicalStockItemId: undefined,
+                    });
+                    return;
+                  }
                 }}
               >
                 <SelectTrigger>
@@ -533,8 +611,8 @@ const MenuManager: React.FC = () => {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__none__">(none)</SelectItem>
-                  {saleFrontStockOptions.map((o) => (
-                    <SelectItem key={o.itemId} value={o.itemId}>
+                  {safeSaleFrontStockOptions.map((o) => (
+                    <SelectItem key={o.optionId} value={String(o.optionId)}>
                       {o.label} - On hand: {o.onHand.toFixed(2)}
                     </SelectItem>
                   ))}
@@ -543,118 +621,6 @@ const MenuManager: React.FC = () => {
               <div className="text-xs text-muted-foreground">
                 If linked, sales deduct directly from Front Office `SALE` stock for this item.
               </div>
-            </div>
-
-            <div className="space-y-1">
-              <Label>Name</Label>
-              <Popover open={stockSuggestionsOpen} onOpenChange={setStockSuggestionsOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    role="combobox"
-                    aria-expanded={stockSuggestionsOpen}
-                    className="w-full justify-between"
-                  >
-                    {form.name || "Search stock items or enter name..."}
-                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-full p-0">
-                  <Command>
-                    <div className="flex items-center gap-2 px-2 py-2">
-                      <CommandInput
-                        placeholder="Search stock items..."
-                        value={form.name || ''}
-                        onValueChange={(value) => {
-                          setForm({ ...form, name: value });
-                          setStockSuggestionsOpen(true);
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            setStockSuggestionsOpen(false);
-                          }
-                        }}
-                        className="flex-1"
-                      />
-                      <Button size="sm" variant="ghost" onClick={() => {
-                        // Confirm custom name via button
-                        setSelectedStockId(undefined);
-                        setIsRetail(false);
-                        setStockSuggestionsOpen(false);
-                      }}>
-                        <Check className="h-4 w-4" />
-                      </Button>
-                    </div>
-                    <CommandEmpty>No stock items found.</CommandEmpty>
-                    {/* Allow explicit adding of a custom name while typing */}
-                    {(String(form.name || '').trim().length > 0) && (
-                      <CommandGroup>
-                        <CommandItem
-                          key="__add_custom__"
-                          value={String(form.name || '')}
-                          onSelect={() => {
-                            // Keep the typed name, close suggestions and ensure it's not linked to stock
-                            setSelectedStockId(undefined);
-                            setIsRetail(false);
-                            setStockSuggestionsOpen(false);
-                          }}
-                        >
-                          <div className="flex flex-col">
-                            <span className="font-medium">Add "{String(form.name || '')}"</span>
-                            <span className="text-xs text-muted-foreground">Use custom name as new menu item</span>
-                          </div>
-                        </CommandItem>
-                      </CommandGroup>
-                    )}
-                    <CommandGroup>
-                      {stockItems
-                        .filter(s => {
-                          if (!form.name) return true;
-                          const q = (form.name || '').toLowerCase();
-                          return String(s.name ?? '').toLowerCase().includes(q) ||
-                                 String(s.code ?? '').toLowerCase().includes(q);
-                        })
-                        .slice(0, 10)
-                        .map(s => (
-                          <CommandItem
-                            key={s.id}
-                            value={s.name}
-                            onSelect={() => {
-                              // Prefill form with stock item details
-                              setForm({
-                                ...form,
-                                name: s.name,
-                                code: s.code,
-                                price: s.currentCost || form.price,
-                                categoryId: s.departmentId || form.categoryId
-                              });
-                              setSelectedStockId(s.id);
-                              setIsRetail(true);
-                              setStockSuggestionsOpen(false);
-                              // Show confirmation about creating direct recipe
-                              setPendingStockSelection(s);
-                              setConfirmRetailModalOpen(true);
-                            }}
-                          >
-                            <Check
-                              className={cn(
-                                "mr-2 h-4 w-4",
-                                selectedStockId === s.id ? "opacity-100" : "opacity-0"
-                              )}
-                            />
-                            <div className="flex flex-col">
-                              <span>{s.name}</span>
-                              <span className="text-xs text-muted-foreground">
-                                Code: {s.code} | Stock: {s.currentStock?.toFixed(2) || '0.00'} | Cost: {formatMoneyPrecise(s.currentCost || 0, 2)}
-                              </span>
-                            </div>
-                          </CommandItem>
-                        ))}
-                    </CommandGroup>
-                  </Command>
-                </PopoverContent>
-              </Popover>
             </div>
 
             <div className="space-y-1">
@@ -753,38 +719,6 @@ const MenuManager: React.FC = () => {
             </DialogHeader>
             <DialogFooter>
               <Button onClick={() => setValidationModalOpen(false)}>OK</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        <Dialog open={confirmRetailModalOpen} onOpenChange={setConfirmRetailModalOpen}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Create Direct Recipe</DialogTitle>
-              <DialogDescription>
-                You're linking this menu item directly to the stock item "{pendingStockSelection?.name}".
-                This will automatically create a 1:1 manufacturing recipe that connects the menu item to this stock item for inventory tracking.
-                <br /><br />
-                When this item is sold, it will deduct from Front Office stock (SALE) or from recipe ingredients in MANUFACTURING.
-              </DialogDescription>
-            </DialogHeader>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => {
-                setConfirmRetailModalOpen(false);
-                setPendingStockSelection(null);
-                // Reset to manual entry mode
-                setIsRetail(false);
-                setSelectedStockId(undefined);
-              }}>
-                Cancel
-              </Button>
-              <Button onClick={() => {
-                setConfirmRetailModalOpen(false);
-                setPendingStockSelection(null);
-                // Keep the retail setup
-              }}>
-                OK, Create Recipe
-              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
