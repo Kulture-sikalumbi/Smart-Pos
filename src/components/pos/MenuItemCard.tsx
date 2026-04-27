@@ -2,6 +2,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import { POSMenuItem } from '@/types/pos';
 import { useEffect, useState, useMemo, useSyncExternalStore } from 'react';
+import { useToast } from '@/hooks/use-toast';
 import { isSupabaseConfigured, supabase, SUPABASE_BUCKET } from '@/lib/supabaseClient';
 import { subscribeStockItems, getStockItemsSnapshot } from '@/lib/stockStore';
 import { subscribeManufacturingRecipes, getManufacturingRecipesSnapshot } from '@/lib/manufacturingRecipeStore';
@@ -24,6 +25,7 @@ export default function MenuItemCard({ item, onAdd, className }: Props) {
   const recipes = useSyncExternalStore(subscribeManufacturingRecipes, getManufacturingRecipesSnapshot);
   const [showLowStockModal, setShowLowStockModal] = useState(false);
   const [lowStockDetails, setLowStockDetails] = useState<Array<{ ingredientId: string; requiredPerUnit: number; onHand: number; name?: string }>>([]);
+  const { toast } = useToast();
   const mfgOnHandByItemId = useMemo(() => {
     const m = new Map<string, number>();
     for (const r of frontStock ?? []) {
@@ -300,6 +302,11 @@ export default function MenuItemCard({ item, onAdd, className }: Props) {
                 onHand,
                 name: stock?.name ?? item.name,
               }]);
+              // Inform user of maximum addable quantity
+              const maxAllowed = Math.max(0, Math.floor(onHand + 1e-9));
+              if (toast) {
+                toast({ title: 'Not enough stock', description: maxAllowed > 0 ? `You can add up to ${maxAllowed} ${item.name}(s) based on current stock.` : `${item.name} is out of stock.`, variant: 'destructive' });
+              }
               setShowLowStockModal(true);
               return;
             }
@@ -312,6 +319,10 @@ export default function MenuItemCard({ item, onAdd, className }: Props) {
                   onHand,
                   name: item.name,
                 }]);
+                const maxAllowed = Math.max(0, Math.floor(onHand + 1e-9));
+                if (toast) {
+                  toast({ title: 'Not enough stock', description: maxAllowed > 0 ? `You can add up to ${maxAllowed} ${item.name}(s) based on current stock.` : `${item.name} is out of stock.`, variant: 'destructive' });
+                }
                 setShowLowStockModal(true);
                 return;
               }
@@ -327,6 +338,14 @@ export default function MenuItemCard({ item, onAdd, className }: Props) {
                 details.push({ ingredientId: ing.ingredientId, requiredPerUnit, onHand, name: stock?.name });
               }
             }
+            // For recipe path, show estimated makeable units if available
+            try {
+              const est = stockStatus?.onHand ?? null;
+              const maxAllowed = est !== null && typeof est !== 'undefined' ? Math.max(0, Math.floor(Number(est) || 0)) : null;
+              if (maxAllowed !== null && toast) {
+                toast({ title: 'Not enough ingredients', description: maxAllowed > 0 ? `You can add up to ~${maxAllowed} ${item.name}(s) with current Manufacturing stock.` : `${item.name} cannot be made with current ingredients.`, variant: 'destructive' });
+              }
+            } catch {}
             setLowStockDetails(details);
             setShowLowStockModal(true);
             console.debug('[MenuItemCard] click blocked - lowStock', { code: item.code, details });

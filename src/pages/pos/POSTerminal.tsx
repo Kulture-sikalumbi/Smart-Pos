@@ -408,6 +408,9 @@ export default function POSTerminal() {
   const [recipeError, setRecipeError] = useState<string | null>(null);
   const [recipeErrorDetail, setRecipeErrorDetail] = useState<string | null>(null);
   const [showRecipeError, setShowRecipeError] = useState(false);
+  const [showStockBlocked, setShowStockBlocked] = useState(false);
+  const [stockBlockTitle, setStockBlockTitle] = useState<string | null>(null);
+  const [stockBlockDescription, setStockBlockDescription] = useState<string | null>(null);
 
   useEffect(() => {
     const on = () => setIsOnline(true);
@@ -660,7 +663,9 @@ export default function POSTerminal() {
           const nextQty = oi.quantity + safeQty;
           const check = canSetMenuItemQty(menuItem, nextQty);
           if (!check.ok) {
-            toast({ title: check.title, description: check.description, variant: 'destructive' });
+            setStockBlockTitle(check.title ?? 'Not enough stock');
+            setStockBlockDescription(check.description ?? 'Insufficient stock to add this quantity.');
+            setShowStockBlocked(true);
             return oi;
           }
           return {
@@ -672,7 +677,9 @@ export default function POSTerminal() {
       }
       const check = canSetMenuItemQty(menuItem, safeQty);
       if (!check.ok) {
-        toast({ title: check.title, description: check.description, variant: 'destructive' });
+        setStockBlockTitle(check.title ?? 'Not enough stock');
+        setStockBlockDescription(check.description ?? 'Insufficient stock to add this quantity.');
+        setShowStockBlocked(true);
         return prevOrderItems;
       }
       const newItem: OrderItem = {
@@ -721,7 +728,9 @@ export default function POSTerminal() {
     if (existing) {
       const check = canSetMenuItemQty(menuItem, existing.quantity + 1);
       if (!check.ok) {
-        toast({ title: check.title, description: check.description, variant: 'destructive' });
+        setStockBlockTitle(check.title ?? 'Not enough stock');
+        setStockBlockDescription(check.description ?? 'Insufficient stock to add this quantity.');
+        setShowStockBlocked(true);
         return;
       }
       setOrderItems(
@@ -740,7 +749,9 @@ export default function POSTerminal() {
 
     const check = canSetMenuItemQty(menuItem, 1);
     if (!check.ok) {
-      toast({ title: check.title, description: check.description, variant: 'destructive' });
+      setStockBlockTitle(check.title ?? 'Not enough stock');
+      setStockBlockDescription(check.description ?? 'Insufficient stock to add this quantity.');
+      setShowStockBlocked(true);
       return;
     }
     const newItem: OrderItem = {
@@ -791,7 +802,9 @@ export default function POSTerminal() {
         if (mi) {
           const check = canSetMenuItemQty(mi, newQty);
           if (!check.ok) {
-            toast({ title: check.title, description: check.description, variant: 'destructive' });
+            setStockBlockTitle(check.title ?? 'Not enough stock');
+            setStockBlockDescription(check.description ?? 'Insufficient stock to set this quantity.');
+            setShowStockBlocked(true);
             return item;
           }
         }
@@ -815,7 +828,9 @@ export default function POSTerminal() {
         if (mi) {
           const check = canSetMenuItemQty(mi, nextQty);
           if (!check.ok) {
-            toast({ title: check.title, description: check.description, variant: 'destructive' });
+            setStockBlockTitle(check.title ?? 'Not enough stock');
+            setStockBlockDescription(check.description ?? 'Insufficient stock to set this quantity.');
+            setShowStockBlocked(true);
             return item;
           }
         }
@@ -2224,6 +2239,20 @@ export default function POSTerminal() {
           <AlertDialogFooter>
             <AlertDialogCancel>Close</AlertDialogCancel>
             {/* Manager override removed: sales cannot bypass inventory deductions here. */}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={showStockBlocked} onOpenChange={setShowStockBlocked}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{stockBlockTitle ?? 'Stock unavailable'}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {stockBlockDescription ?? 'This item cannot be added due to current stock levels.'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Close</AlertDialogCancel>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
