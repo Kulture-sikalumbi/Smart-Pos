@@ -23,6 +23,19 @@ export const supabase: SupabaseClient | null = isSupabaseConfigured()
     })
   : null;
 
+// Isolated client for one-off credential checks that must not alter
+// the app's primary authenticated session.
+export const createEphemeralSupabaseClient = (): SupabaseClient | null =>
+  isSupabaseConfigured()
+    ? createClient(supabaseUrl!, supabaseAnonKey!, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+          detectSessionInUrl: false,
+        },
+      })
+    : null;
+
 // Expose client to window during development to aid debugging in DevTools console.
 // Do NOT rely on this in production; it's a dev-time convenience.
 try {

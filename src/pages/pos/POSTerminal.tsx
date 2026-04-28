@@ -37,7 +37,7 @@ import { parseSmartQuantityQuery, smartSearchMenuItems } from '@/lib/smartMenuSe
 import { getPosPaymentRequestsSnapshot, resolvePosPaymentRequest, subscribePosPaymentRequests } from '@/lib/posPaymentRequestStore';
 import { getPosNotificationsSnapshot, subscribePosNotifications, markNotificationsSeen, deleteNotificationById } from '@/lib/posNotificationStore';
 import { ROLE_NAMES } from '@/types/auth';
-import { supabase } from '@/lib/supabaseClient';
+import { createEphemeralSupabaseClient, supabase } from '@/lib/supabaseClient';
 import { useCurrency } from '@/contexts/CurrencyContext';
 import { getFrontStockSnapshot, subscribeFrontStock } from '@/lib/frontStockStore';
 
@@ -227,6 +227,9 @@ export default function POSTerminal() {
   const [supervisorPin, setSupervisorPin] = useState('');
   const [availableTills, setAvailableTills] = useState<Array<{ id: string; code: string; name: string }>>([]);
   const [selectedTillId, setSelectedTillId] = useState<string>('');
+  const tillAutoLoadTimerRef = useRef<number | null>(null);
+  const lastTillAutoLoadKeyRef = useRef<string>('');
+  const allowTillSetupCloseRef = useRef(false);
 
   const [isOnline, setIsOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
 
@@ -361,20 +364,55 @@ export default function POSTerminal() {
 
   const loadTillsForSupervisor = async () => {
     if (!supabase) return;
-    const email = supervisorEmail.trim();
+    const email = supervisorEmail.trim().toLowerCase();
     const pin = supervisorPin.trim();
-    if (!email) {
-      setTillSetupError('Enter admin/supervisor email.');
+    const isPinMode = /^[0-9]{4}$/.test(pin);
+    const brandId = String(user?.brand_id ?? '').trim();
+    if (!brandId) {
+      setTillSetupError('Missing brand context. Please sign in again.');
       return;
     }
-    if (!/^[0-9]{4}$/.test(pin)) {
-      setTillSetupError('Enter admin/supervisor 4-digit PIN.');
+    if (!pin) {
+      setTillSetupError('Enter supervisor PIN or admin password.');
+      return;
+    }
+    if (!isPinMode && !email) {
+      setTillSetupError('Enter admin email to use password verification.');
+      setAvailableTills([]);
       return;
     }
     setTillSetupBusy(true);
     setTillSetupError(null);
     try {
-      const { data, error } = await supabase.rpc('list_tills_for_staff', { p_email: email, p_pin: pin });
+      let data: any = null;
+      let error: any = null;
+
+      if (isPinMode) {
+        const result = await supabase.rpc('list_tills_for_brand_supervisor_pin', {
+          p_brand_id: brandId,
+          p_pin: pin,
+        });
+        data = result.data;
+        error = result.error;
+      } else {
+        const authClient = createEphemeralSupabaseClient();
+        if (!authClient) {
+          setTillSetupError('Supabase not configured.');
+          setAvailableTills([]);
+          return;
+        }
+        const loginRes = await authClient.auth.signInWithPassword({ email, password: pin });
+        if (loginRes.error || !(loginRes.data as any)?.user?.id) {
+          setTillSetupError('Invalid admin email/password.');
+          setAvailableTills([]);
+          return;
+        }
+        const result = await authClient.rpc('list_tills_for_staff', { p_email: email, p_pin: pin });
+        data = result.data;
+        error = result.error;
+        await authClient.auth.signOut();
+      }
+
       if (error) {
         setTillSetupError(String((error as any)?.message ?? 'Unable to load tills'));
         setAvailableTills([]);
@@ -386,6 +424,9 @@ export default function POSTerminal() {
         name: String(t.name ?? ''),
       }));
       setAvailableTills(tills);
+      if (!tills.length) {
+        setTillSetupError('Invalid supervisor PIN or no active tills found for this brand.');
+      }
       if (!selectedTillId && tills.length) setSelectedTillId(tills[0].id);
     } catch (e: any) {
       setTillSetupError(e?.message ?? 'Unable to load tills');
@@ -395,16 +436,52 @@ export default function POSTerminal() {
     }
   };
 
+  useEffect(() => {
+    if (!showTillSetup) return;
+    const email = supervisorEmail.trim().toLowerCase();
+    const secret = supervisorPin.trim();
+    const brandId = String(user?.brand_id ?? '').trim();
+    if (!brandId || !secret) return;
+    if (!/^[0-9]{4}$/.test(secret) && !email) return;
+
+    const autoLoadKey = `${brandId}|${email}|${secret}`;
+    if (lastTillAutoLoadKeyRef.current === autoLoadKey) return;
+
+    if (tillAutoLoadTimerRef.current != null) {
+      window.clearTimeout(tillAutoLoadTimerRef.current);
+    }
+    tillAutoLoadTimerRef.current = window.setTimeout(() => {
+      if (lastTillAutoLoadKeyRef.current === autoLoadKey) return;
+      lastTillAutoLoadKeyRef.current = autoLoadKey;
+      void loadTillsForSupervisor();
+    }, 350);
+
+    return () => {
+      if (tillAutoLoadTimerRef.current != null) {
+        window.clearTimeout(tillAutoLoadTimerRef.current);
+        tillAutoLoadTimerRef.current = null;
+      }
+    };
+    // Intentionally omit loadTillsForSupervisor to avoid recreating the debounce on each render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showTillSetup, supervisorEmail, supervisorPin, user?.brand_id]);
+
   const assignTillToThisDevice = async () => {
     if (!supabase) return;
-    const email = supervisorEmail.trim();
+    const email = supervisorEmail.trim().toLowerCase();
     const pin = supervisorPin.trim();
-    if (!email) {
-      setTillSetupError('Enter admin/supervisor email.');
+    const isPinMode = /^[0-9]{4}$/.test(pin);
+    const brandId = String(user?.brand_id ?? '').trim();
+    if (!brandId) {
+      setTillSetupError('Missing brand context. Please sign in again.');
       return;
     }
-    if (!/^[0-9]{4}$/.test(pin)) {
-      setTillSetupError('Enter admin/supervisor 4-digit PIN.');
+    if (!pin) {
+      setTillSetupError('Enter supervisor PIN or admin password.');
+      return;
+    }
+    if (!isPinMode && !email) {
+      setTillSetupError('Enter admin email to use password verification.');
       return;
     }
     if (!selectedTillId) {
@@ -414,12 +491,40 @@ export default function POSTerminal() {
     setTillSetupBusy(true);
     setTillSetupError(null);
     try {
-      const { data, error } = await supabase.rpc('assign_pos_device_to_till', {
-        p_email: email,
-        p_pin: pin,
-        p_device_id: deviceId,
-        p_till_id: selectedTillId,
-      });
+      let data: any = null;
+      let error: any = null;
+
+      if (isPinMode) {
+        const result = await supabase.rpc('assign_pos_device_to_till_by_brand_supervisor_pin', {
+          p_brand_id: brandId,
+          p_pin: pin,
+          p_device_id: deviceId,
+          p_till_id: selectedTillId,
+        });
+        data = result.data;
+        error = result.error;
+      } else {
+        const authClient = createEphemeralSupabaseClient();
+        if (!authClient) {
+          setTillSetupError('Supabase not configured.');
+          return;
+        }
+        const loginRes = await authClient.auth.signInWithPassword({ email, password: pin });
+        if (loginRes.error || !(loginRes.data as any)?.user?.id) {
+          setTillSetupError('Invalid admin email/password.');
+          return;
+        }
+        const result = await authClient.rpc('assign_pos_device_to_till', {
+          p_email: email,
+          p_pin: pin,
+          p_device_id: deviceId,
+          p_till_id: selectedTillId,
+        });
+        data = result.data;
+        error = result.error;
+        await authClient.auth.signOut();
+      }
+
       if (error) {
         setTillSetupError(String((error as any)?.message ?? 'Unable to assign till'));
         return;
@@ -429,7 +534,9 @@ export default function POSTerminal() {
         setTillSetupError(String((data as any)?.error ?? 'Unable to assign till'));
         return;
       }
+      allowTillSetupCloseRef.current = true;
       setShowTillSetup(false);
+      setShowStartShift(true);
       toast({ title: 'Till assigned', description: 'This terminal is now linked to a till.' });
     } catch (e: any) {
       setTillSetupError(e?.message ?? 'Unable to assign till');
@@ -469,7 +576,9 @@ export default function POSTerminal() {
         const msg = message.toLowerCase();
 
         if (status === 404 || msg.includes('404') || msg.includes('could not find the function') || msg.includes('function')) {
-          setShiftError('Shift feature is not installed on the server yet. Run Supabase migration 013 (cashier_shift_rpcs) and try again.');
+          setShiftError(
+            'Shift feature is not installed on the server yet. Run the latest shift/till migrations: 2026-04-28-tills-and-pos-devices.sql, 2026-04-28-cashier-shift-start-require-device.sql, and 2026-04-28-cashier-shift-rpcs-v2-till-details.sql.'
+          );
         } else if (status === 400) {
           const extra = [details, hint].filter(Boolean).join(' ');
           setShiftError(`Unable to end shift: ${message || 'Bad request.'}${extra ? ` ${extra}` : ''}`);
@@ -516,24 +625,48 @@ export default function POSTerminal() {
   };
 
   useEffect(() => {
-    // If cashier: restore active shift (if any) and prompt for start shift when none exists.
+    // If cashier: restore active shift (if any). If none exists, enforce till setup first,
+    // then show the start-shift cash modal.
     if (!isCashier || !user?.id) return;
 
     const stored = readStoredShiftId();
-    if (!stored) {
-      setActiveShiftId(null);
-      setActiveTill(null);
-      setShowStartShift(true);
-      return;
-    }
-
-    if (!supabase) {
-      setActiveShiftId(stored);
-      return;
-    }
-
     let disposed = false;
+
+    const hasTillAssignedForDevice = async () => {
+      if (!supabase) return false;
+      const email = String(user?.email ?? '').trim();
+      const pin = String(operatorPin ?? '').trim();
+      if (!email || !/^[0-9]{4}$/.test(pin)) return false;
+      try {
+        const { data, error } = await supabase.rpc('get_device_till_for_staff', {
+          p_email: email,
+          p_pin: pin,
+          p_device_id: deviceId,
+        });
+        if (error) return false;
+        const row = Array.isArray(data) ? data[0] : (data as any);
+        return Boolean(row?.till_id);
+      } catch {
+        return false;
+      }
+    };
+
     (async () => {
+      if (!stored) {
+        setActiveShiftId(null);
+        setActiveTill(null);
+        const assigned = await hasTillAssignedForDevice();
+        if (disposed) return;
+        setShowTillSetup(!assigned);
+        setShowStartShift(assigned);
+        return;
+      }
+
+      if (!supabase) {
+        setActiveShiftId(stored);
+        return;
+      }
+
       try {
         const { data, error } = await supabase.rpc('cashier_shift_get', { p_shift_id: stored });
         if (disposed) return;
@@ -541,7 +674,10 @@ export default function POSTerminal() {
           setActiveShiftId(null);
           setActiveTill(null);
           storeShiftId(null);
-          setShowStartShift(true);
+          const assigned = await hasTillAssignedForDevice();
+          if (disposed) return;
+          setShowTillSetup(!assigned);
+          setShowStartShift(assigned);
           return;
         }
         const row = Array.isArray(data) ? data[0] : (data as any);
@@ -549,7 +685,10 @@ export default function POSTerminal() {
           setActiveShiftId(null);
           setActiveTill(null);
           storeShiftId(null);
-          setShowStartShift(true);
+          const assigned = await hasTillAssignedForDevice();
+          if (disposed) return;
+          setShowTillSetup(!assigned);
+          setShowStartShift(assigned);
           return;
         }
         setActiveShiftId(String(row.id ?? stored));
@@ -568,7 +707,7 @@ export default function POSTerminal() {
       disposed = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCashier, user?.id, supabase]);
+  }, [isCashier, user?.id, user?.email, operatorPin, supabase, deviceId]);
   const [receiptOrder, setReceiptOrder] = useState<Order | null>(null);
   const [showReceipt, setShowReceipt] = useState(false);
   const [showSessionReceipts, setShowSessionReceipts] = useState(false);
@@ -1482,6 +1621,8 @@ export default function POSTerminal() {
       <Dialog
         open={showTillSetup}
         onOpenChange={(o) => {
+          // Till assignment is mandatory before shift start; block manual dismiss.
+          if (!o && !allowTillSetupCloseRef.current) return;
           setShowTillSetup(o);
           if (!o) {
             setTillSetupError(null);
@@ -1490,10 +1631,19 @@ export default function POSTerminal() {
             setSelectedTillId('');
             setSupervisorEmail('');
             setSupervisorPin('');
+            lastTillAutoLoadKeyRef.current = '';
+            allowTillSetupCloseRef.current = false;
+            if (tillAutoLoadTimerRef.current != null) {
+              window.clearTimeout(tillAutoLoadTimerRef.current);
+              tillAutoLoadTimerRef.current = null;
+            }
           }
         }}
       >
-        <DialogContent>
+        <DialogContent
+          onEscapeKeyDown={(e) => e.preventDefault()}
+          onPointerDownOutside={(e) => e.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle>Assign this terminal to a till</DialogTitle>
           </DialogHeader>
@@ -1504,15 +1654,29 @@ export default function POSTerminal() {
             <div className="text-muted-foreground">
               An admin/supervisor must assign this device to a till before shifts can start.
             </div>
+            <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              This step is required for audit trails, cashier accountability, and accurate cash/funds tracking per drawer.
+            </div>
 
             <div className="grid gap-2">
               <div className="grid gap-1">
-                <div className="text-xs text-muted-foreground">Admin/Supervisor email</div>
-                <Input value={supervisorEmail} onChange={(e) => setSupervisorEmail(e.target.value)} placeholder="e.g. supervisor@brand.com" />
+                <div className="text-xs text-muted-foreground">Admin email (only for password mode)</div>
+                <Input
+                  value={supervisorEmail}
+                  onChange={(e) => setSupervisorEmail(e.target.value)}
+                  placeholder="e.g. owner@brand.com"
+                  autoComplete="username"
+                />
               </div>
               <div className="grid gap-1">
-                <div className="text-xs text-muted-foreground">Admin/Supervisor PIN</div>
-                <Input value={supervisorPin} onChange={(e) => setSupervisorPin(e.target.value)} placeholder="4-digit PIN" inputMode="numeric" />
+                <div className="text-xs text-muted-foreground">Supervisor PIN or admin password</div>
+                <Input
+                  value={supervisorPin}
+                  onChange={(e) => setSupervisorPin(e.target.value)}
+                  placeholder="4-digit PIN or password"
+                  type="password"
+                  autoComplete="current-password"
+                />
               </div>
               <div className="flex gap-2">
                 <Button variant="outline" onClick={loadTillsForSupervisor} disabled={tillSetupBusy}>
@@ -1542,9 +1706,6 @@ export default function POSTerminal() {
             {tillSetupError ? <div className="text-sm text-destructive">{tillSetupError}</div> : null}
 
             <div className="flex justify-end gap-2 pt-2">
-              <Button variant="outline" onClick={() => setShowTillSetup(false)} disabled={tillSetupBusy}>
-                Cancel
-              </Button>
               <Button onClick={assignTillToThisDevice} disabled={tillSetupBusy || !selectedTillId}>
                 Assign till
               </Button>

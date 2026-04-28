@@ -107,12 +107,30 @@ BEGIN
     RETURN jsonb_build_object('ok', false, 'error', 'till_not_found');
   END IF;
 
-  INSERT INTO public.pos_devices (brand_id, device_id, till_id, last_seen_at)
-  VALUES (v_staff.brand_id, v_device, v_till.id, now())
-  ON CONFLICT (brand_id, lower(device_id))
-  DO UPDATE SET till_id = excluded.till_id,
-                last_seen_at = now(),
-                updated_at = now();
+  -- Avoid ON CONFLICT index inference errors on environments
+  -- where the functional unique index may be missing.
+  UPDATE public.pos_devices d
+  SET till_id = v_till.id,
+      last_seen_at = now(),
+      updated_at = now()
+  WHERE d.brand_id = v_staff.brand_id
+    AND lower(d.device_id) = lower(v_device);
+
+  IF NOT FOUND THEN
+    BEGIN
+      INSERT INTO public.pos_devices (brand_id, device_id, till_id, last_seen_at)
+      VALUES (v_staff.brand_id, v_device, v_till.id, now());
+    EXCEPTION
+      WHEN unique_violation THEN
+        -- Concurrent insert: update the existing row.
+        UPDATE public.pos_devices d
+        SET till_id = v_till.id,
+            last_seen_at = now(),
+            updated_at = now()
+        WHERE d.brand_id = v_staff.brand_id
+          AND lower(d.device_id) = lower(v_device);
+    END;
+  END IF;
 
   RETURN jsonb_build_object('ok', true, 'brand_id', v_staff.brand_id, 'device_id', v_device, 'till_id', v_till.id);
 END;

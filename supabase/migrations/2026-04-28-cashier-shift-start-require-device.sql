@@ -4,6 +4,7 @@
 BEGIN;
 
 DROP FUNCTION IF EXISTS public.cashier_shift_start(text, text, numeric);
+DROP FUNCTION IF EXISTS public.cashier_shift_start(text, text, numeric, text);
 
 CREATE OR REPLACE FUNCTION public.cashier_shift_start(
   p_email text,
