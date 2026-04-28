@@ -705,9 +705,7 @@ export default function StockIssues() {
                         </div>
                         <div>
                           <div className="text-xs text-muted-foreground">Unit Cost</div>
-                          <div className="font-medium text-right">K {(Number(line.unitCostAtTime ?? line.unit_cost_at_time ?? 0)).toFixed(2)}</div>
-                                                  <div className="font-medium text-right">{formatMoneyPrecise(Number(line.unitCostAtTime ?? line.unit_cost_at_time ?? 0), 2)}</div>
-                                                  <span className="font-medium">{formatMoneyPrecise(Number(grp.totalValue ?? 0), 2)}</span>
+                          <div className="font-medium text-right">{formatMoneyPrecise(Number(line.unitCostAtTime ?? line.unit_cost_at_time ?? 0), 2)}</div>
                         </div>
                         <div className="sm:col-span-1">
                           <div className="text-xs text-muted-foreground">Notes</div>

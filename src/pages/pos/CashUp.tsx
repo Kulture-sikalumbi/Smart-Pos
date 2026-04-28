@@ -189,7 +189,7 @@ export default function CashUp() {
                 <KPICard title="Shift Started" value={shiftStartedAt} />
                 <KPICard title="DRN From" value={String(shift.drnFrom ?? '-')} />
                 <KPICard title="Staff" value={shift.staffName} />
-                <KPICard title="Opening Cash" value={`K ${opening.toFixed(2)}`} />
+                <KPICard title="Opening Cash" value={formatMoneyPrecise(opening, 2)} />
               </div>
 
               <Card>

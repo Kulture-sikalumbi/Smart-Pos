@@ -17,6 +17,7 @@ import { useAuth } from '@/contexts/AuthContext';
 const reports = [
   { title: 'Management Overview', description: 'Daily summary with KPIs, profit, and activity', icon: BarChart3, path: '/app/dashboard' },
   { title: 'ZRA Tax Season', description: 'One-click export of sales + VAT for ZRA portal', icon: FileText, path: '/app/zra-tax-season' },
+  { title: 'Shift X / Z Reports', description: 'Shift summaries, Z-report variance, and reconciliation', icon: FileText, path: '/app/reports/shifts' },
   { title: 'Purchases (GRV)', description: 'Goods received vouchers, costs, and supplier receipts', icon: ShoppingCart, path: '/app/purchases' },
   { title: 'Stock on Hand', description: 'Current inventory levels by department', icon: Package, path: '/app/inventory/items' },
   { title: 'Stock Issues Report', description: 'Internal transfer history', icon: ArrowRightLeft, path: '/app/inventory/stock-issues' },

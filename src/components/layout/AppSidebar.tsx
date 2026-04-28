@@ -46,8 +46,10 @@ import {
 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { UserRole } from '@/types/auth';
+import { isAdminLikeRole } from '@/types/auth';
 
 type NavItemType = {
+  id: string;
   title: string;
   url: string;
   icon: React.ComponentType<{ className?: string }>;
@@ -56,28 +58,30 @@ type NavItemType = {
 };
 
 const backOfficeItems: NavItemType[] = [
-  { title: 'Workspace Home', url: '/app/back-office', icon: LayoutDashboard, permission: 'viewDashboard' },
-  { title: 'Dashboard', url: '/app/dashboard', icon: LayoutDashboard, permission: 'viewDashboard' },
-  { title: 'Stock Items', url: '/app/inventory/items', icon: Package, permission: 'viewInventory' },
-  { title: 'Purchases (GRV)', url: '/app/purchases', icon: ShoppingCart, permission: 'viewPurchases' },
-  { title: 'Stock Issues', url: '/app/inventory/stock-issues', icon: ArrowRightLeft, permission: 'createStockIssues' },
-  { title: 'Stock Take', url: '/app/inventory/stock-take', icon: ClipboardCheck, permission: 'performStockTake' },
-  { title: 'Staff', url: '/app/staff', icon: Users, permission: 'viewStaff' },
-  { title: 'Reports', url: '/app/reports', icon: BarChart3, permission: 'viewReports' },
+  { id: 'back-home', title: 'Workspace Home', url: '/app/back-office', icon: LayoutDashboard, permission: 'viewDashboard' },
+  { id: 'back-dashboard', title: 'Dashboard', url: '/app/dashboard', icon: LayoutDashboard, permission: 'viewDashboard' },
+  { id: 'back-stock-items', title: 'Stock Items', url: '/app/inventory/items', icon: Package, permission: 'viewInventory' },
+  { id: 'back-purchases', title: 'Purchases (GRV)', url: '/app/purchases', icon: ShoppingCart, permission: 'viewPurchases' },
+  { id: 'back-stock-issues', title: 'Stock Issues', url: '/app/inventory/stock-issues', icon: ArrowRightLeft, permission: 'createStockIssues' },
+  { id: 'back-stock-take', title: 'Stock Take', url: '/app/inventory/stock-take', icon: ClipboardCheck, permission: 'performStockTake' },
+  { id: 'back-staff', title: 'Staff', url: '/app/staff', icon: Users, permission: 'viewStaff' },
+  { id: 'back-reports', title: 'Reports', url: '/app/reports', icon: BarChart3, permission: 'viewReports' },
+  { id: 'back-shift-reports', title: 'Shift X/Z Reports', url: '/app/reports/shifts', icon: Receipt, permission: 'viewReports' },
+  { id: 'back-tills', title: 'Tills', url: '/app/settings/tills', icon: Receipt, permission: 'manageSettings' },
 ];
 
 const frontOfficeItems: NavItemType[] = [
-  { title: 'Workspace Home', url: '/app/front-office', icon: ChefHat, permission: 'accessPOS' },
-  { title: 'POS Terminal', url: '/app/pos/terminal', icon: MonitorSmartphone, permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
-  { title: 'Front Office Stock', url: '/app/inventory/front-office-stock', icon: Package, permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor', 'kitchen_staff'] },
-  { title: 'Stock Transfers', url: '/app/inventory/front-office-stock', icon: ArrowRightLeft, permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor'] },
-  { title: 'Front Stock Take', url: '/app/inventory/front-stock-take', icon: ClipboardCheck, permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor'] },
-  { title: 'Batch Production', url: '/app/manufacturing/production', icon: Boxes, permission: 'recordBatchProduction' },
-  { title: 'Batch History', url: '/app/manufacturing/history', icon: BarChart3, permission: 'recordBatchProduction', roles: ['owner', 'manager', 'front_supervisor'] },
-  { title: 'Kitchen Display', url: '/app/pos/kitchen', icon: UtensilsCrossed, permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'kitchen_staff'] },
-  { title: 'Tables', url: '/app/pos/tables', icon: Grid3X3, permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
-  { title: 'Stock Issues (Bridge)', url: '/app/inventory/stock-issues', icon: ArrowRightLeft, permission: 'createStockIssues', roles: ['owner', 'manager', 'front_supervisor'] },
-  { title: 'Daily Receipts', url: '/app/receipt-demo', icon: Receipt, permission: 'viewReports', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
+  { id: 'front-home', title: 'Workspace Home', url: '/app/front-office', icon: ChefHat, permission: 'accessPOS' },
+  { id: 'front-pos', title: 'POS Terminal', url: '/app/pos/terminal', icon: MonitorSmartphone, permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
+  { id: 'front-stock', title: 'Front Office Stock', url: '/app/inventory/front-office-stock', icon: Package, permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor', 'kitchen_staff'] },
+  { id: 'front-transfers', title: 'Stock Transfers', url: '/app/inventory/transfer-qr', icon: ArrowRightLeft, permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor'] },
+  { id: 'front-stock-take', title: 'Front Stock Take', url: '/app/inventory/front-stock-take', icon: ClipboardCheck, permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor'] },
+  { id: 'front-batch-production', title: 'Batch Production', url: '/app/manufacturing/production', icon: Boxes, permission: 'recordBatchProduction' },
+  { id: 'front-batch-history', title: 'Batch History', url: '/app/manufacturing/history', icon: BarChart3, permission: 'recordBatchProduction', roles: ['owner', 'manager', 'front_supervisor'] },
+  { id: 'front-kitchen', title: 'Kitchen Display', url: '/app/pos/kitchen', icon: UtensilsCrossed, permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'kitchen_staff'] },
+  { id: 'front-tables', title: 'Tables', url: '/app/pos/tables', icon: Grid3X3, permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
+  { id: 'front-stock-issues', title: 'Stock Issues (Bridge)', url: '/app/inventory/stock-issues', icon: ArrowRightLeft, permission: 'createStockIssues', roles: ['owner', 'manager', 'front_supervisor'] },
+  { id: 'front-receipts', title: 'Daily Receipts', url: '/app/receipt-demo', icon: Receipt, permission: 'viewReports', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
 ];
 
 export function AppSidebar() {
@@ -94,7 +98,9 @@ export function AppSidebar() {
   const hasBrand = Boolean(authBrandId);
   const role = String((user as any)?.role ?? '').toLowerCase();
   const isSuperAdmin = Boolean((user as any)?.is_super_admin);
-  const canSwitchMode = isSuperAdmin || role === 'owner' || role === 'admin';
+  const isAdminLike = isSuperAdmin || isAdminLikeRole(role);
+  const canSwitchMode = isAdminLike;
+  const showPrivilegedFooterLinks = isAdminLike;
 
   const isActive = (path: string) => {
     if (path === '/app') return location.pathname === '/app' || location.pathname === '/app/';
@@ -122,7 +128,12 @@ export function AppSidebar() {
                 setShowCreateBrandDialog(true);
                 return;
               }
-              if (item.url.startsWith('/app/pos') || item.url.startsWith('/app/manufacturing') || item.url.startsWith('/app/inventory/front-office-stock')) {
+              if (
+                item.url.startsWith('/app/pos') ||
+                item.url.startsWith('/app/manufacturing') ||
+                item.url.startsWith('/app/inventory/front-office-stock') ||
+                item.url.startsWith('/app/inventory/transfer-qr')
+              ) {
                 setWorkspace('front');
               }
               if (item.url.startsWith('/app/dashboard') || item.url.startsWith('/app/purchases') || item.url.startsWith('/app/staff') || item.url.startsWith('/app/reports') || item.url.startsWith('/app/inventory/stock')) {
@@ -169,7 +180,7 @@ export function AppSidebar() {
           )}
         </div>
 
-        {!collapsed && (
+        {!collapsed && canSwitchMode && (
           <div className="mt-3 flex items-center gap-2">
             <Button
               size="sm"
@@ -203,46 +214,48 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               {visibleItems.map((item) => (
-                <NavItem key={item.url} item={item} />
+                <NavItem key={item.id} item={item} />
               ))}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="p-4 border-t border-sidebar-border">
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={isActive('/hub')}>
-              <NavLink to="/hub" className="flex items-center gap-3 px-3 py-2 rounded-md transition-colors text-sidebar-foreground hover:bg-sidebar-accent/50">
-                <ChefHat className="h-4 w-4 shrink-0" />
-                {!collapsed && <span>Command Center</span>}
-              </NavLink>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild isActive={isActive('/app/settings')}>
-              <NavLink
-                to={hasBrand ? '/app/settings' : '#'}
-                onClick={(e) => {
-                  if (!hasBrand) {
-                    e.preventDefault();
-                    navigate('/app/company-settings');
-                  }
-                }}
-                className={cn(
-                  'flex items-center gap-3 px-3 py-2 rounded-md transition-colors',
-                  isActive('/app/settings') ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium' : 'text-sidebar-foreground hover:bg-sidebar-accent/50',
-                  !hasBrand && 'opacity-60'
-                )}
-              >
-                <Settings className="h-4 w-4 shrink-0" />
-                {!collapsed && <span>Settings</span>}
-              </NavLink>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarFooter>
+      {showPrivilegedFooterLinks ? (
+        <SidebarFooter className="p-4 border-t border-sidebar-border">
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive('/hub')}>
+                <NavLink to="/hub" className="flex items-center gap-3 px-3 py-2 rounded-md transition-colors text-sidebar-foreground hover:bg-sidebar-accent/50">
+                  <ChefHat className="h-4 w-4 shrink-0" />
+                  {!collapsed && <span>Command Center</span>}
+                </NavLink>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive('/app/settings')}>
+                <NavLink
+                  to={hasBrand ? '/app/settings' : '#'}
+                  onClick={(e) => {
+                    if (!hasBrand) {
+                      e.preventDefault();
+                      navigate('/app/company-settings');
+                    }
+                  }}
+                  className={cn(
+                    'flex items-center gap-3 px-3 py-2 rounded-md transition-colors',
+                    isActive('/app/settings') ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium' : 'text-sidebar-foreground hover:bg-sidebar-accent/50',
+                    !hasBrand && 'opacity-60'
+                  )}
+                >
+                  <Settings className="h-4 w-4 shrink-0" />
+                  {!collapsed && <span>Settings</span>}
+                </NavLink>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarFooter>
+      ) : null}
 
       <AlertDialog open={showCreateBrandDialog} onOpenChange={setShowCreateBrandDialog}>
         <AlertDialogContent>

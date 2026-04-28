@@ -1,4 +1,5 @@
 import type { ReceiptSettings } from '@/types';
+import { getActiveBrandId, subscribeActiveBrandId } from '@/lib/activeBrand';
 
 const KEY = 'pmx4_receipt_settings_v1';
 const EVENT = 'pmx4_receipt_settings_change';
@@ -6,6 +7,7 @@ const EVENT = 'pmx4_receipt_settings_change';
 export const DEFAULT_RECEIPT_SETTINGS: ReceiptSettings = {
   countryCode: 'ZM',
   currencyCode: 'ZMW',
+  logoUrl: undefined,
   legalFooter: 'Thank you for your support. Keep this receipt for your records.',
   autoPrint: true,
   googleReviewUrl: 'https://www.google.com/search?q=your+restaurant+google+reviews',
@@ -15,9 +17,22 @@ export const DEFAULT_RECEIPT_SETTINGS: ReceiptSettings = {
 let cachedRaw: string | null = null;
 let cachedSettings: ReceiptSettings = { ...DEFAULT_RECEIPT_SETTINGS };
 
+function storageKeyForBrand(brandId: string | null) {
+  return `${KEY}.${brandId ? String(brandId) : 'none'}`;
+}
+
+let currentBrandId: string | null = getActiveBrandId();
+
+subscribeActiveBrandId(() => {
+  currentBrandId = getActiveBrandId();
+  cachedRaw = null;
+  cachedSettings = { ...DEFAULT_RECEIPT_SETTINGS };
+  window.dispatchEvent(new Event(EVENT));
+});
+
 export function getReceiptSettings(): ReceiptSettings {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(storageKeyForBrand(currentBrandId));
     if (!raw) return DEFAULT_RECEIPT_SETTINGS;
     const parsed = JSON.parse(raw) as Partial<ReceiptSettings>;
     return { ...DEFAULT_RECEIPT_SETTINGS, ...parsed };
@@ -29,7 +44,7 @@ export function getReceiptSettings(): ReceiptSettings {
 export function subscribeReceiptSettings(listener: () => void) {
   const onCustom = () => listener();
   const onStorage = (e: StorageEvent) => {
-    if (e.key !== KEY) return;
+    if (e.key !== storageKeyForBrand(currentBrandId)) return;
     listener();
   };
 
@@ -47,7 +62,7 @@ export function getReceiptSettingsSnapshot() {
   // cause render loops.
   let raw: string | null = null;
   try {
-    raw = localStorage.getItem(KEY);
+    raw = localStorage.getItem(storageKeyForBrand(currentBrandId));
   } catch {
     raw = null;
   }
@@ -77,7 +92,7 @@ export function saveReceiptSettings(next: ReceiptSettings) {
   // Avoid redundant events for identical payloads.
   if (serialized === cachedRaw) return;
 
-  localStorage.setItem(KEY, serialized);
+  localStorage.setItem(storageKeyForBrand(currentBrandId), serialized);
   cachedRaw = serialized;
   cachedSettings = normalized;
   window.dispatchEvent(new Event(EVENT));

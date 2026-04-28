@@ -40,6 +40,7 @@ type StaffSession = {
   v: 1;
   staff: BrandStaffUser;
   brand: any;
+  operatorPin?: string;
   cachedAt: number;
 };
 
@@ -401,7 +402,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setUser(restored.staff);
           setBrand(restored.brand);
           setBrandIsActive(resolveBrandIsActive(restored.brand));
-          setOperatorPin(null);
+          setOperatorPin(restored.operatorPin ?? null);
           setLoading(false);
           setProfileReady(true);
           return;
@@ -461,6 +462,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setActiveUserId(userId);
         setProfileReady(false);
         setOperatorPin(null);
+        clearStaffSession();
 
         const snap = loadAuthSnapshot(userId);
         if (snap?.user) {
@@ -763,7 +765,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setLoading(false);
       setProfileReady(true);
 
-      saveStaffSession({ v: 1, staff: staffUser, brand: nextBrand, cachedAt: Date.now() });
+      saveStaffSession({ v: 1, staff: staffUser, brand: nextBrand, operatorPin: cleanPin, cachedAt: Date.now() });
 
       return { ok: true, role: staffUser.role };
     } catch (e: any) {

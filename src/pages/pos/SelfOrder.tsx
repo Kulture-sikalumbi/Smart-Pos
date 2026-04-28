@@ -85,16 +85,31 @@ export default function SelfOrder() {
           .map((r) => String(r.producedCode ?? '').trim().toLowerCase())
           .filter(Boolean)
       );
+      const saleItemCodes = new Set(
+        (frontStock ?? [])
+          .filter((r) => String(r.locationTag ?? '').toUpperCase() === 'SALE')
+          .map((r) => String((r as any).itemCode ?? '').trim().toLowerCase())
+          .filter(Boolean)
+      );
+      const saleItemNames = new Set(
+        (frontStock ?? [])
+          .filter((r) => String(r.locationTag ?? '').toUpperCase() === 'SALE')
+          .map((r) => String((r as any).itemName ?? (r as any).producedName ?? '').trim().toLowerCase())
+          .filter(Boolean)
+      );
 
       for (const line of cart) {
         const mi = menuById.get(line.menuItemId);
         const code = String(mi?.code ?? line.menuItemCode);
+        const name = String(mi?.name ?? '');
         const qty = Number.isFinite(line.quantity) ? line.quantity : 0;
         if (qty <= 0) continue;
 
         const directFrontStockLinked = Boolean((mi as any)?.physicalStockItemId);
         const directProducedSaleLinked = Boolean(code && saleProducedCodes.has(String(code).trim().toLowerCase()));
-        if (directFrontStockLinked || directProducedSaleLinked) {
+        const directSaleCodeLinked = Boolean(code && saleItemCodes.has(String(code).trim().toLowerCase()));
+        const directSaleNameLinked = Boolean(name && saleItemNames.has(String(name).trim().toLowerCase()));
+        if (directFrontStockLinked || directProducedSaleLinked || directSaleCodeLinked || directSaleNameLinked) {
           continue;
         }
 

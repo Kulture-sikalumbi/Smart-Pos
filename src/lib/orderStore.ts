@@ -6,6 +6,7 @@ import { ensureRecipesLoaded, getManufacturingRecipesSnapshot } from '@/lib/manu
 import { logSensitiveAction } from '@/lib/systemAuditLog';
 import { getActiveBrandId, subscribeActiveBrandId } from '@/lib/activeBrand';
 import { pushDebug } from '@/lib/debugLog';
+import { getReceiptSettingsSnapshot } from '@/lib/receiptSettingsService';
 
 const STORAGE_KEY = 'mthunzi.orders.v1';
 
@@ -74,6 +75,7 @@ async function sendOrderToSupabase(order: Order) {
   const payloadOrder: any = {
     id: order.id,
     brand_id: currentBrandId,
+    shift_id: order.shiftId ?? null,
     order_no: order.orderNo,
     table_no: order.tableNo ?? null,
     order_type: order.orderType,
@@ -92,6 +94,30 @@ async function sendOrderToSupabase(order: Order) {
     created_at: order.createdAt,
     sent_at: order.sentAt ?? null,
     paid_at: order.paidAt ?? null,
+  };
+
+  const receiptPayload = {
+    brand_id: currentBrandId,
+    order_id: String(order.id),
+    shift_id: order.shiftId ?? null,
+    till_id: order.tillId ?? null,
+    staff_id: order.staffId ?? null,
+    staff_name: order.staffName ?? null,
+    order_no: Number.isFinite(Number(order.orderNo)) ? Number(order.orderNo) : null,
+    payment_method: order.paymentMethod ?? null,
+    subtotal: Number(order.subtotal ?? 0),
+    discount_amount: Number(order.discountAmount ?? 0),
+    tax: Number(order.tax ?? 0),
+    total: Number(order.total ?? 0),
+    currency_code: String(getReceiptSettingsSnapshot().currencyCode ?? 'ZMW').toUpperCase(),
+    issued_at: order.paidAt ?? new Date().toISOString(),
+    payload: {
+      orderType: order.orderType,
+      tableNo: order.tableNo ?? null,
+      items: order.items ?? [],
+      tillCode: order.tillCode ?? null,
+      tillName: order.tillName ?? null,
+    },
   };
 
   // Use the in-memory/local order id directly — we only write `pos_order_items`.
@@ -148,6 +174,17 @@ async function sendOrderToSupabase(order: Order) {
 
     // Persist invoice record for paid orders (one invoice per order)
     if (order.status === 'paid' && currentBrandId) {
+      try {
+        const { error: receiptError } = await supabase!
+          .from('pos_receipts')
+          .upsert(receiptPayload, { onConflict: 'brand_id,order_id' });
+        if (receiptError) {
+          console.warn('[orderStore] failed to upsert pos_receipts', receiptError);
+        }
+      } catch (e) {
+        console.warn('[orderStore] pos_receipts upsert exception', e);
+      }
+
       try {
         const invoiceOrderId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(remoteOrderId)
           ? remoteOrderId

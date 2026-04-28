@@ -6,8 +6,23 @@ import type { Order } from '@/types/pos';
 import { Printer } from 'lucide-react';
 import { getReceiptSettings } from '@/lib/receiptSettingsService';
 
-function formatK(amount: number) {
-  return `K ${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+function formatMoneyFallback(amount: number, currencyCode: string) {
+  const value = Number.isFinite(amount) ? amount : 0;
+  const code = String(currencyCode || 'ZMW').toUpperCase();
+  if (code === 'ZMW') {
+    return `K ${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: 'currency',
+      currency: code,
+      currencyDisplay: 'narrowSymbol',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(value);
+  } catch {
+    return `${code} ${value.toFixed(2)}`;
+  }
 }
 
 export default function ReceiptPrintDialog(props: {
@@ -15,8 +30,9 @@ export default function ReceiptPrintDialog(props: {
   onOpenChange: (open: boolean) => void;
   appName: string;
   order: Order | null;
+  formatMoney?: (amount: number) => string;
 }) {
-  const { open, onOpenChange, appName, order } = props;
+  const { open, onOpenChange, appName, order, formatMoney } = props;
 
   const settings = useMemo(() => getReceiptSettings(), []);
   const [barcodeDataUrl, setBarcodeDataUrl] = useState<string | null>(null);
@@ -111,6 +127,11 @@ export default function ReceiptPrintDialog(props: {
         ) : (
           <div className="print-area rounded-lg border bg-background p-4">
             <div className="text-center">
+              {settings.logoUrl ? (
+                <div className="mb-2 flex justify-center">
+                  <img src={settings.logoUrl} alt="Receipt logo" className="h-10 w-10 rounded object-cover border border-border" />
+                </div>
+              ) : null}
               <div className="text-lg font-bold tracking-tight">{appName}</div>
               <div className="text-xs text-muted-foreground">Thank you for your purchase</div>
             </div>
@@ -119,6 +140,9 @@ export default function ReceiptPrintDialog(props: {
               <div>
                 <div>Order: #{order.orderNo ?? order.id}</div>
                 {order.tableNo ? <div>Table: {order.tableNo}</div> : null}
+                {(order.tillCode || order.tillName) ? (
+                  <div>Till: {order.tillCode ? `#${order.tillCode}` : ''}{order.tillName ? ` ${order.tillName}` : ''}</div>
+                ) : null}
                 <div>Cashier: {order.staffName}</div>
               </div>
               <div className="text-right">{new Date(order.createdAt).toLocaleString()}</div>
@@ -145,7 +169,7 @@ export default function ReceiptPrintDialog(props: {
                         ) : null}
                       </div>
                       <div className="text-right tabular-nums">{it.quantity}</div>
-                      <div className="text-right tabular-nums">{formatK(it.total)}</div>
+                      <div className="text-right tabular-nums">{formatMoney ? formatMoney(it.total) : formatMoneyFallback(it.total, settings.currencyCode)}</div>
                     </div>
                   </div>
                 ))}
@@ -155,21 +179,21 @@ export default function ReceiptPrintDialog(props: {
             <div className="space-y-1 text-sm">
               <div className="flex justify-between">
                 <span>Subtotal</span>
-                <span className="tabular-nums">{formatK(order.subtotal)}</span>
+                <span className="tabular-nums">{formatMoney ? formatMoney(order.subtotal) : formatMoneyFallback(order.subtotal, settings.currencyCode)}</span>
               </div>
               {order.discountAmount > 0 ? (
                 <div className="flex justify-between text-muted-foreground">
                   <span>Discount ({(order.discountPercent ?? 0).toFixed(0)}%)</span>
-                  <span className="tabular-nums">− {formatK(order.discountAmount)}</span>
+                  <span className="tabular-nums">− {formatMoney ? formatMoney(order.discountAmount) : formatMoneyFallback(order.discountAmount, settings.currencyCode)}</span>
                 </div>
               ) : null}
               <div className="flex justify-between text-muted-foreground">
                 <span>VAT (16%)</span>
-                <span className="tabular-nums">{formatK(order.tax)}</span>
+                <span className="tabular-nums">{formatMoney ? formatMoney(order.tax) : formatMoneyFallback(order.tax, settings.currencyCode)}</span>
               </div>
               <div className="flex justify-between pt-2 border-t font-bold">
                 <span>Total</span>
-                <span className="tabular-nums">{formatK(order.total)}</span>
+                <span className="tabular-nums">{formatMoney ? formatMoney(order.total) : formatMoneyFallback(order.total, settings.currencyCode)}</span>
               </div>
             </div>
 

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import LoginOverlay from '@/components/common/LoginOverlay';
+import { getDefaultAppRouteForRole } from '@/types/auth';
 
 import landing3 from '../../assets/landing3.png';
 import landing4 from '../../assets/landing4.png';
@@ -27,13 +28,6 @@ export default function Landing() {
     "Pro Tip: Enable offline sync so orders continue even if connectivity drops.",
   ];
   const [tipIndex, setTipIndex] = useState(0);
-
-  const getDefaultAppRouteForRole = (role: string | undefined) => {
-    if (role === 'kitchen_staff') return '/app/pos/kitchen';
-    if (role === 'cashier') return '/app/pos/terminal';
-    if (role === 'front_supervisor' || role === 'manager' || role === 'owner' || role === 'admin') return '/hub';
-    return '/app/pos';
-  };
 
   useEffect(() => {
     const timer = window.setInterval(() => {

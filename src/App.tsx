@@ -30,8 +30,10 @@ import { BatchProductionManager } from "./pages/manufacturing/BatchProductionMan
 import Purchases from "./pages/Purchases";
 import Staff from "./pages/Staff";
 import Reports from "./pages/Reports";
+import ShiftReports from "./pages/ShiftReports";
 import IntelligenceWorkspace from "./pages/IntelligenceWorkspace";
 import Settings from "./pages/Settings";
+import TillManagement from "./pages/TillManagement";
 import NotFound from "./pages/NotFound";
 import TaxEngineDemo from './pages/TaxEngineDemo';
 import AuditDashboard from './pages/AuditDashboard';
@@ -215,9 +217,11 @@ const App = () => {
                     <Route path="purchases" element={<Purchases />} />
                     <Route path="staff" element={<Staff />} />
                     <Route path="reports" element={<Reports />} />
+                    <Route path="reports/shifts" element={<ShiftReports />} />
                     <Route path="intelligence" element={<IntelligenceWorkspace />} />
                     <Route path="zra-tax-season" element={<ZRATaxSeason />} />
                     <Route path="settings" element={<Settings />} />
+                    <Route path="settings/tills" element={<TillManagement />} />
                     <Route path="company-settings" element={<CompanySettings />} />
                     <Route path="tax-demo" element={<TaxEngineDemo />} />
                     <Route path="audit-dashboard" element={<AuditDashboard />} />

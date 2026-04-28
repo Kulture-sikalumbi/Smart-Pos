@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { ShoppingCart, Send, Trash2, Plus, Minus, CreditCard, Users, Percent, Settings as SettingsIcon, RefreshCw, Wifi, BellRing, FolderOpen, LogOut, MoreHorizontal } from 'lucide-react';
+import { ShoppingCart, Send, Trash2, Plus, Minus, CreditCard, Users, Percent, Settings as SettingsIcon, RefreshCw, Wifi, BellRing, FolderOpen, LogOut, MoreHorizontal, Receipt } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -40,6 +40,26 @@ import { ROLE_NAMES } from '@/types/auth';
 import { supabase } from '@/lib/supabaseClient';
 import { useCurrency } from '@/contexts/CurrencyContext';
 import { getFrontStockSnapshot, subscribeFrontStock } from '@/lib/frontStockStore';
+
+type SessionReceiptRow = {
+  id: string;
+  order_id: string;
+  shift_id?: string | null;
+  till_id?: string | null;
+  till_code?: string | null;
+  till_name?: string | null;
+  staff_id?: string | null;
+  staff_name?: string | null;
+  order_no?: number | null;
+  payment_method?: PaymentMethod | null;
+  subtotal?: number | null;
+  discount_amount?: number | null;
+  tax?: number | null;
+  total?: number | null;
+  currency_code?: string | null;
+  issued_at?: string | null;
+  payload?: any;
+};
 
 export default function POSTerminal() {
   const auth = useAuth();
@@ -170,6 +190,7 @@ export default function POSTerminal() {
 
   const CASHIER_SHIFT_KEY_PREFIX = 'pmx.cashier.shift.active.v1.';
   const [activeShiftId, setActiveShiftId] = useState<string | null>(null);
+  const [activeTill, setActiveTill] = useState<{ id: string; code: string; name: string } | null>(null);
   const [showStartShift, setShowStartShift] = useState(false);
   const [openingCash, setOpeningCash] = useState('');
   const [confirmStartShift, setConfirmStartShift] = useState(false);
@@ -181,6 +202,31 @@ export default function POSTerminal() {
   const [confirmEndShift, setConfirmEndShift] = useState(false);
   // Fallback PIN prompt (only used if we don't have the pin from staff login)
   const [cashierPin, setCashierPin] = useState('');
+
+  const POS_DEVICE_ID_KEY = 'pmx.pos.deviceId.v1';
+  const getOrCreateDeviceId = () => {
+    try {
+      const existing = localStorage.getItem(POS_DEVICE_ID_KEY);
+      if (existing && existing.trim()) return existing.trim();
+      const uuid = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `dev-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      localStorage.setItem(POS_DEVICE_ID_KEY, uuid);
+      return uuid;
+    } catch {
+      return `dev-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+  };
+
+  const deviceId = useMemo(() => getOrCreateDeviceId(), []);
+
+  const [showTillSetup, setShowTillSetup] = useState(false);
+  const [tillSetupBusy, setTillSetupBusy] = useState(false);
+  const [tillSetupError, setTillSetupError] = useState<string | null>(null);
+  const [supervisorEmail, setSupervisorEmail] = useState('');
+  const [supervisorPin, setSupervisorPin] = useState('');
+  const [availableTills, setAvailableTills] = useState<Array<{ id: string; code: string; name: string }>>([]);
+  const [selectedTillId, setSelectedTillId] = useState<string>('');
 
   const [isOnline, setIsOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
 
@@ -241,6 +287,8 @@ export default function POSTerminal() {
     });
   };
 
+  const [showPostShiftActions, setShowPostShiftActions] = useState(false);
+
   const startShift = async (amount: number) => {
     if (!supabase) {
       setShiftError('Supabase not configured.');
@@ -263,6 +311,7 @@ export default function POSTerminal() {
         p_email: user.email,
         p_pin: effectivePin,
         p_opening_cash: amount,
+        p_device_id: deviceId,
       });
       if (error) {
         const status = (error as any)?.status;
@@ -272,7 +321,7 @@ export default function POSTerminal() {
         const msg = message.toLowerCase();
 
         if (status === 404 || msg.includes('404') || msg.includes('could not find the function') || msg.includes('function')) {
-          setShiftError('Shift feature is not installed on the server yet. Run Supabase migration 013 (cashier_shift_rpcs) and try again.');
+          setShiftError('Shift feature is not installed on the server yet. Run the Supabase shift/till migrations and try again.');
         } else if (status === 400) {
           // Surface server-side errors to make debugging deploy/RPC issues straightforward.
           const extra = [details, hint].filter(Boolean).join(' ');
@@ -285,10 +334,16 @@ export default function POSTerminal() {
       const row = Array.isArray(data) ? data[0] : (data as any);
       const shiftId = row?.shift_id ?? row?.id;
       if (!shiftId) {
-        // The server returns an empty set when cashier credentials/role are invalid.
-        setShiftError('Unable to start shift. Check your PIN and ensure your role is cashier.');
+        // Most common causes: invalid cashier role/PIN OR this terminal isn't assigned to a till yet.
+        setShiftError('This terminal is not assigned to a till yet. Ask a supervisor to assign a till for this device.');
+        setShowTillSetup(true);
         return false;
       }
+      setActiveTill({
+        id: String(row?.till_id ?? ''),
+        code: String(row?.till_code ?? ''),
+        name: String(row?.till_name ?? ''),
+      });
       setActiveShiftId(String(shiftId));
       storeShiftId(String(shiftId));
       setShowStartShift(false);
@@ -301,6 +356,85 @@ export default function POSTerminal() {
       return false;
     } finally {
       setShiftBusy(false);
+    }
+  };
+
+  const loadTillsForSupervisor = async () => {
+    if (!supabase) return;
+    const email = supervisorEmail.trim();
+    const pin = supervisorPin.trim();
+    if (!email) {
+      setTillSetupError('Enter admin/supervisor email.');
+      return;
+    }
+    if (!/^[0-9]{4}$/.test(pin)) {
+      setTillSetupError('Enter admin/supervisor 4-digit PIN.');
+      return;
+    }
+    setTillSetupBusy(true);
+    setTillSetupError(null);
+    try {
+      const { data, error } = await supabase.rpc('list_tills_for_staff', { p_email: email, p_pin: pin });
+      if (error) {
+        setTillSetupError(String((error as any)?.message ?? 'Unable to load tills'));
+        setAvailableTills([]);
+        return;
+      }
+      const tills = (Array.isArray(data) ? data : []).map((t: any) => ({
+        id: String(t.id),
+        code: String(t.code ?? ''),
+        name: String(t.name ?? ''),
+      }));
+      setAvailableTills(tills);
+      if (!selectedTillId && tills.length) setSelectedTillId(tills[0].id);
+    } catch (e: any) {
+      setTillSetupError(e?.message ?? 'Unable to load tills');
+      setAvailableTills([]);
+    } finally {
+      setTillSetupBusy(false);
+    }
+  };
+
+  const assignTillToThisDevice = async () => {
+    if (!supabase) return;
+    const email = supervisorEmail.trim();
+    const pin = supervisorPin.trim();
+    if (!email) {
+      setTillSetupError('Enter admin/supervisor email.');
+      return;
+    }
+    if (!/^[0-9]{4}$/.test(pin)) {
+      setTillSetupError('Enter admin/supervisor 4-digit PIN.');
+      return;
+    }
+    if (!selectedTillId) {
+      setTillSetupError('Select a till.');
+      return;
+    }
+    setTillSetupBusy(true);
+    setTillSetupError(null);
+    try {
+      const { data, error } = await supabase.rpc('assign_pos_device_to_till', {
+        p_email: email,
+        p_pin: pin,
+        p_device_id: deviceId,
+        p_till_id: selectedTillId,
+      });
+      if (error) {
+        setTillSetupError(String((error as any)?.message ?? 'Unable to assign till'));
+        return;
+      }
+      const ok = Boolean((data as any)?.ok ?? false);
+      if (!ok) {
+        setTillSetupError(String((data as any)?.error ?? 'Unable to assign till'));
+        return;
+      }
+      setShowTillSetup(false);
+      toast({ title: 'Till assigned', description: 'This terminal is now linked to a till.' });
+    } catch (e: any) {
+      setTillSetupError(e?.message ?? 'Unable to assign till');
+    } finally {
+      setTillSetupBusy(false);
     }
   };
 
@@ -352,13 +486,26 @@ export default function POSTerminal() {
         return false;
       }
 
+      // Best-effort: finalize Z-report snapshot with expected totals.
+      try {
+        await supabase.rpc('cashier_shift_finalize_z_report', {
+          p_shift_id: shiftId,
+          p_actual_cash: amount,
+          p_closed_by_staff_id: user?.id ?? null,
+        } as any);
+      } catch {
+        // ignore finalize failures; shift is still closed via cashier_shift_end
+      }
+
       setActiveShiftId(null);
+      setActiveTill(null);
       storeShiftId(null);
 
       setShowEndShift(false);
       setConfirmEndShift(false);
       setClosingCash('');
       setCashierPin('');
+      setShowPostShiftActions(true);
       return true;
     } catch (e: any) {
       setShiftError(e?.message ?? 'Unable to end shift');
@@ -375,17 +522,58 @@ export default function POSTerminal() {
     const stored = readStoredShiftId();
     if (!stored) {
       setActiveShiftId(null);
+      setActiveTill(null);
       setShowStartShift(true);
       return;
     }
 
-    // We don't fetch shift details here (keeps shift data brand-guarded).
-    // If the shift was closed elsewhere, the end-shift RPC will reject it.
-    setActiveShiftId(stored);
+    if (!supabase) {
+      setActiveShiftId(stored);
+      return;
+    }
+
+    let disposed = false;
+    (async () => {
+      try {
+        const { data, error } = await supabase.rpc('cashier_shift_get', { p_shift_id: stored });
+        if (disposed) return;
+        if (error) {
+          setActiveShiftId(null);
+          setActiveTill(null);
+          storeShiftId(null);
+          setShowStartShift(true);
+          return;
+        }
+        const row = Array.isArray(data) ? data[0] : (data as any);
+        if (!row || row.closed_at) {
+          setActiveShiftId(null);
+          setActiveTill(null);
+          storeShiftId(null);
+          setShowStartShift(true);
+          return;
+        }
+        setActiveShiftId(String(row.id ?? stored));
+        setActiveTill({
+          id: String(row.till_id ?? ''),
+          code: String(row.till_code ?? ''),
+          name: String(row.till_name ?? ''),
+        });
+      } catch {
+        if (disposed) return;
+        setActiveShiftId(stored);
+      }
+    })();
+
+    return () => {
+      disposed = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCashier, user?.id]);
+  }, [isCashier, user?.id, supabase]);
   const [receiptOrder, setReceiptOrder] = useState<Order | null>(null);
   const [showReceipt, setShowReceipt] = useState(false);
+  const [showSessionReceipts, setShowSessionReceipts] = useState(false);
+  const [sessionReceipts, setSessionReceipts] = useState<SessionReceiptRow[]>([]);
+  const [sessionReceiptsLoading, setSessionReceiptsLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   const [orderDiscountPercent, setOrderDiscountPercent] = useState(0);
@@ -476,6 +664,35 @@ export default function POSTerminal() {
     }
     prevNotifIds.current = ids;
   }, [posNotifs, toast]);
+
+  useEffect(() => {
+    if (!showSessionReceipts) return;
+    if (!user?.email || !operatorPin || !supabase) return;
+
+    let cancelled = false;
+    setSessionReceiptsLoading(true);
+
+    (async () => {
+      const { data, error } = await supabase.rpc('get_staff_shift_receipts', {
+        p_email: user.email,
+        p_pin: operatorPin,
+        p_shift_id: activeShiftId ?? null,
+        p_limit: 120,
+      });
+      if (cancelled) return;
+      if (error) {
+        console.warn('[POSTerminal] get_staff_shift_receipts error', error);
+        setSessionReceipts([]);
+      } else {
+        setSessionReceipts((Array.isArray(data) ? data : []) as SessionReceiptRow[]);
+      }
+      setSessionReceiptsLoading(false);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showSessionReceipts, user?.email, operatorPin, activeShiftId]);
 
   function playNotificationTone() {
     try {
@@ -609,8 +826,9 @@ export default function POSTerminal() {
 
       // 2) Ready-to-sell SALE by produced/item code
       if (code) {
-        const onHand = stockMaps.saleByCode.get(code)?.qty ?? 0;
-        if (onHand > 0) {
+        const hasSaleLinkByCode = stockMaps.saleByCode.has(code);
+        if (hasSaleLinkByCode) {
+          const onHand = stockMaps.saleByCode.get(code)?.qty ?? 0;
           if (safeNextQty > onHand + 1e-9) {
             const maxAllowed = Math.max(0, Math.floor(onHand + 1e-9));
             return {
@@ -917,6 +1135,10 @@ export default function POSTerminal() {
     const order: Order = {
       id,
       orderNo,
+      shiftId: activeShiftId ?? existing?.shiftId,
+      tillId: activeTill?.id ?? existing?.tillId,
+      tillCode: activeTill?.code ?? existing?.tillCode,
+      tillName: activeTill?.name ?? existing?.tillName,
       tableId: tableNo ? `t${tableNo}` : undefined,
       tableNo: tableNo ?? undefined,
       orderType,
@@ -1007,6 +1229,18 @@ export default function POSTerminal() {
         .map((r) => String(r.producedCode ?? '').trim().toLowerCase())
         .filter(Boolean)
     );
+    const saleItemCodes = new Set(
+      (frontStock ?? [])
+        .filter((r) => String(r.locationTag ?? '').toUpperCase() === 'SALE')
+        .map((r) => String((r as any).itemCode ?? '').trim().toLowerCase())
+        .filter(Boolean)
+    );
+    const saleItemNames = new Set(
+      (frontStock ?? [])
+        .filter((r) => String(r.locationTag ?? '').toUpperCase() === 'SALE')
+        .map((r) => String((r as any).itemName ?? (r as any).producedName ?? '').trim().toLowerCase())
+        .filter(Boolean)
+    );
 
     const missingRecipeForMenuItemIds: string[] = [];
 
@@ -1017,10 +1251,13 @@ export default function POSTerminal() {
       const menuItem = menuById.get(line.menuItemId);
       const directFrontStockLinked = Boolean((menuItem as any)?.physicalStockItemId);
       const code = String(menuItem?.code ?? line.menuItemCode).trim();
+      const name = String(menuItem?.name ?? '').trim();
       const directProducedSaleLinked = Boolean(code) && saleProducedCodes.has(code.toLowerCase());
+      const directSaleCodeLinked = Boolean(code) && saleItemCodes.has(code.toLowerCase());
+      const directSaleNameLinked = Boolean(name) && saleItemNames.has(name.toLowerCase());
       // Direct ready-to-sell link: no manufacturing recipe required in POS precheck.
       // Backend dispatcher (handle_order_stock_deduction) handles SALE deduction.
-      if (directFrontStockLinked || directProducedSaleLinked) {
+      if (directFrontStockLinked || directProducedSaleLinked || directSaleCodeLinked || directSaleNameLinked) {
         continue;
       }
       const recipe = recipeByParentId.get(line.menuItemId) ?? recipeByCode.get(code);
@@ -1131,6 +1368,64 @@ export default function POSTerminal() {
     setShowAdminGate(true);
   };
 
+  const localSessionPaidOrders = useMemo(
+    () =>
+      orders
+        .filter((o) => o.status === 'paid')
+        .filter((o) => (activeShiftId ? String(o.shiftId ?? '') === String(activeShiftId) : true))
+        .sort((a, b) => String(b.paidAt ?? b.createdAt).localeCompare(String(a.paidAt ?? a.createdAt)))
+        .slice(0, 120),
+    [orders, activeShiftId]
+  );
+
+  const openReceiptFromSessionRow = (row: SessionReceiptRow) => {
+    const payloadItems = Array.isArray(row.payload?.items) ? row.payload.items : [];
+    const order: Order = {
+      id: String(row.order_id ?? row.id),
+      orderNo: Number(row.order_no ?? 0),
+      shiftId: row.shift_id ? String(row.shift_id) : undefined,
+      tillId: row.till_id ? String(row.till_id) : undefined,
+      tillCode: row.till_code ? String(row.till_code) : undefined,
+      tillName: row.till_name ? String(row.till_name) : undefined,
+      tableNo: Number.isFinite(Number(row.payload?.tableNo)) ? Number(row.payload?.tableNo) : undefined,
+      orderType: (row.payload?.orderType as OrderType) ?? 'take_out',
+      status: 'paid',
+      staffId: String(row.staff_id ?? ''),
+      staffName: String(row.staff_name ?? 'Cashier'),
+      items: payloadItems.map((it: any, idx: number) => ({
+        id: String(it?.id ?? `${row.id}-it-${idx}`),
+        menuItemId: String(it?.menuItemId ?? ''),
+        menuItemCode: String(it?.menuItemCode ?? ''),
+        menuItemName: String(it?.menuItemName ?? 'Item'),
+        quantity: Number(it?.quantity ?? 0),
+        unitPrice: Number(it?.unitPrice ?? 0),
+        unitCost: Number(it?.unitCost ?? 0),
+        discountPercent: it?.discountPercent != null ? Number(it.discountPercent) : undefined,
+        total: Number(it?.total ?? 0),
+        notes: it?.notes ? String(it.notes) : undefined,
+        modifiers: Array.isArray(it?.modifiers) ? it.modifiers.map((m: any) => String(m)) : undefined,
+        isVoided: Boolean(it?.isVoided),
+        voidReason: it?.voidReason ? String(it.voidReason) : undefined,
+        sentToKitchen: Boolean(it?.sentToKitchen),
+        preparedAt: it?.preparedAt ? String(it.preparedAt) : undefined,
+      })),
+      subtotal: Number(row.subtotal ?? 0),
+      discountAmount: Number(row.discount_amount ?? 0),
+      discountPercent: 0,
+      tax: Number(row.tax ?? 0),
+      total: Number(row.total ?? 0),
+      totalCost: 0,
+      grossProfit: 0,
+      gpPercent: 0,
+      createdAt: String(row.issued_at ?? new Date().toISOString()),
+      paidAt: String(row.issued_at ?? new Date().toISOString()),
+      paymentMethod: (row.payment_method as PaymentMethod) ?? undefined,
+    };
+    setReceiptOrder(order);
+    setShowSessionReceipts(false);
+    setShowReceipt(true);
+  };
+
   const unlockAdminAndOpenSettings = async () => {
     setAdminError(null);
     const email = adminEmail.trim();
@@ -1162,6 +1457,102 @@ export default function POSTerminal() {
   
   return (
     <div className="h-screen p-3 pos-light">
+      <AlertDialog open={showPostShiftActions} onOpenChange={setShowPostShiftActions}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Shift closed</AlertDialogTitle>
+            <AlertDialogDescription>
+              Your Z-report snapshot has been saved. Next step: run a Front Office Stock Take to check for leakage and reconcile front stock.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setShowPostShiftActions(false)}>Later</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setShowPostShiftActions(false);
+                navigate('/app/inventory/front-stock-take');
+              }}
+            >
+              Run Front Stock Take
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog
+        open={showTillSetup}
+        onOpenChange={(o) => {
+          setShowTillSetup(o);
+          if (!o) {
+            setTillSetupError(null);
+            setTillSetupBusy(false);
+            setAvailableTills([]);
+            setSelectedTillId('');
+            setSupervisorEmail('');
+            setSupervisorPin('');
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Assign this terminal to a till</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              Device ID: <span className="font-mono">{deviceId}</span>
+            </div>
+            <div className="text-muted-foreground">
+              An admin/supervisor must assign this device to a till before shifts can start.
+            </div>
+
+            <div className="grid gap-2">
+              <div className="grid gap-1">
+                <div className="text-xs text-muted-foreground">Admin/Supervisor email</div>
+                <Input value={supervisorEmail} onChange={(e) => setSupervisorEmail(e.target.value)} placeholder="e.g. supervisor@brand.com" />
+              </div>
+              <div className="grid gap-1">
+                <div className="text-xs text-muted-foreground">Admin/Supervisor PIN</div>
+                <Input value={supervisorPin} onChange={(e) => setSupervisorPin(e.target.value)} placeholder="4-digit PIN" inputMode="numeric" />
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" onClick={loadTillsForSupervisor} disabled={tillSetupBusy}>
+                  Load tills
+                </Button>
+              </div>
+            </div>
+
+            {availableTills.length ? (
+              <div className="grid gap-1">
+                <div className="text-xs text-muted-foreground">Select till</div>
+                <Select value={selectedTillId} onValueChange={setSelectedTillId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose a till" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableTills.map((t) => (
+                      <SelectItem key={t.id} value={t.id}>
+                        {t.code} • {t.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : null}
+
+            {tillSetupError ? <div className="text-sm text-destructive">{tillSetupError}</div> : null}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setShowTillSetup(false)} disabled={tillSetupBusy}>
+                Cancel
+              </Button>
+              <Button onClick={assignTillToThisDevice} disabled={tillSetupBusy || !selectedTillId}>
+                Assign till
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <div className="h-full rounded-2xl border bg-background overflow-auto lg:overflow-hidden overscroll-contain">
         <div className="h-full grid grid-cols-1 md:grid-cols-[4.5rem_1fr] lg:grid-cols-[4.5rem_1fr_22rem] xl:grid-cols-[4.5rem_1fr_26rem]">
           {/* Left icon rail (POS-like) */}
@@ -1224,7 +1615,14 @@ export default function POSTerminal() {
             {/* Debug panel removed */}
             {/* Top bar */}
             <div className="flex items-center justify-between gap-3 border-b p-3">
-              <div className="font-semibold hidden sm:block">{settings.appName}</div>
+              <div className="hidden sm:block">
+                <div className="font-semibold">{settings.appName}</div>
+                {activeTill?.id ? (
+                  <div className="text-xs text-muted-foreground">
+                    Till {activeTill.code || '?'} • {activeTill.name || 'Unnamed'}
+                  </div>
+                ) : null}
+              </div>
               <div className="flex-1 max-w-xl">
                 <Popover open={searchOpen} onOpenChange={setSearchOpen}>
                   <PopoverTrigger asChild>
@@ -2010,7 +2408,7 @@ export default function POSTerminal() {
             </Button>
           </div>
 
-          <div className="mt-2">
+          <div className="mt-2 grid grid-cols-2 gap-2">
             <Button
               variant="outline"
               className="w-full"
@@ -2018,6 +2416,14 @@ export default function POSTerminal() {
               onClick={() => setShowReceipt(true)}
             >
               Print Receipt
+            </Button>
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => setShowSessionReceipts(true)}
+            >
+              <Receipt className="h-4 w-4 mr-2" />
+              Session Receipts
             </Button>
           </div>
 
@@ -2177,6 +2583,68 @@ export default function POSTerminal() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={showSessionReceipts} onOpenChange={setShowSessionReceipts}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Session Receipts</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[65vh] overflow-auto space-y-2">
+            {sessionReceiptsLoading ? (
+              <div className="text-sm text-muted-foreground">Loading receipts...</div>
+            ) : sessionReceipts.length > 0 ? (
+              sessionReceipts.map((r) => (
+                <Card key={r.id} className="p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold">
+                        Receipt #{r.order_no ?? '-'} {r.till_code || r.till_name ? `• Till ${r.till_code ?? '?'} ${r.till_name ?? ''}` : ''}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {String(r.staff_name ?? 'Cashier')} • {r.issued_at ? new Date(r.issued_at).toLocaleString() : 'Unknown time'}
+                      </div>
+                      <div className="text-sm mt-1">
+                        Total: <span className="font-mono">{formatMoneyPrecise(Number(r.total ?? 0), 2)}</span>
+                      </div>
+                    </div>
+                    <Button size="sm" onClick={() => openReceiptFromSessionRow(r)}>
+                      Reprint
+                    </Button>
+                  </div>
+                </Card>
+              ))
+            ) : localSessionPaidOrders.length > 0 ? (
+              localSessionPaidOrders.map((o) => (
+                <Card key={o.id} className="p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold">Receipt #{o.orderNo}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {o.staffName} • {new Date(String(o.paidAt ?? o.createdAt)).toLocaleString()}
+                      </div>
+                      <div className="text-sm mt-1">
+                        Total: <span className="font-mono">{formatMoneyPrecise(o.total, 2)}</span>
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setReceiptOrder(o);
+                        setShowSessionReceipts(false);
+                        setShowReceipt(true);
+                      }}
+                    >
+                      Reprint
+                    </Button>
+                  </div>
+                </Card>
+              ))
+            ) : (
+              <div className="text-sm text-muted-foreground">No receipts in this session yet.</div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={showCoupon} onOpenChange={setShowCoupon}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -2226,6 +2694,7 @@ export default function POSTerminal() {
         onOpenChange={setShowReceipt}
         appName={settings.appName}
         order={receiptOrder}
+        formatMoney={(amount) => formatMoneyPrecise(amount, 2)}
       />
 
       <AlertDialog open={showRecipeError} onOpenChange={setShowRecipeError}>

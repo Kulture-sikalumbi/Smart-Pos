@@ -472,6 +472,7 @@ export interface ReceiptSettings {
   countryCode: CountryCode;
   currencyCode: CurrencyCode;
   legalFooter: string;
+  logoUrl?: string;
   autoPrint?: boolean;
 
   /** For non-Zambia countries, where should the QR take the customer? */

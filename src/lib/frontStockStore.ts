@@ -31,6 +31,38 @@ let initialized = false;
 let realtimeUnsub: (() => void) | null = null;
 let focusWired = false;
 let currentBrandId: string | null = getActiveBrandId();
+const STAFF_SESSION_KEY = 'pmx.staff.session.v1';
+
+function getStoredStaffCredentials(): { email: string; pin: string } | null {
+  try {
+    const raw = localStorage.getItem(STAFF_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as any;
+    const email = String(parsed?.staff?.email ?? '').trim();
+    const pin = String(parsed?.operatorPin ?? '').trim();
+    if (!email || !/^\d{4}$/.test(pin)) return null;
+    return { email, pin };
+  } catch {
+    return null;
+  }
+}
+
+function mapFrontRows(frontRows: any[]): FrontStockRow[] {
+  return (frontRows ?? []).map((r: any) => ({
+    id: String(r.id),
+    brandId: String(r.brand_id),
+    itemId: r.item_id ? String(r.item_id) : '',
+    producedCode: r.produced_code ? String(r.produced_code) : undefined,
+    producedName: r.produced_name ? String(r.produced_name) : undefined,
+    locationTag: String(r.location_tag),
+    quantity: typeof r.quantity === 'number' ? r.quantity : parseFloat(r.quantity ?? 0) || 0,
+    unit: String(r.unit ?? ''),
+    reorderLevel: r.reorder_level === null || r.reorder_level === undefined ? undefined : (typeof r.reorder_level === 'number' ? r.reorder_level : parseFloat(r.reorder_level) || 0),
+    updatedAt: r.updated_at ? String(r.updated_at) : null,
+    itemName: r.item_name ? String(r.item_name) : (r.produced_name ? String(r.produced_name) : undefined),
+    itemCode: r.item_code ? String(r.item_code) : (r.produced_code ? String(r.produced_code) : undefined),
+  })) as FrontStockRow[];
+}
 
 subscribeActiveBrandId(() => {
   currentBrandId = getActiveBrandId();
@@ -84,35 +116,38 @@ async function fetchFromDb() {
       return;
     }
 
-    const { data: frontRows, error: frontErr } = await supabase
-      .from('front_stock')
-      .select('id, brand_id, item_id, produced_code, produced_name, location_tag, quantity, unit, reorder_level, updated_at')
-      .eq('brand_id', brandId);
+    const staffCreds = getStoredStaffCredentials();
+    let rows: FrontStockRow[] = [];
 
-    if (frontErr) {
-      console.warn('[frontStockStore] failed to fetch front_stock', frontErr);
-      return;
+    if (staffCreds) {
+      const { data: staffRows, error: staffErr } = await supabase.rpc('get_front_stock_snapshot_for_staff', {
+        p_email: staffCreds.email,
+        p_pin: staffCreds.pin,
+      });
+      if (staffErr) {
+        console.warn('[frontStockStore] staff snapshot rpc failed', staffErr);
+      } else {
+        rows = mapFrontRows(Array.isArray(staffRows) ? staffRows : []);
+      }
     }
 
-    const rows = (frontRows ?? []).map((r: any) => ({
-      id: String(r.id),
-      brandId: String(r.brand_id),
-      itemId: r.item_id ? String(r.item_id) : '',
-      producedCode: r.produced_code ? String(r.produced_code) : undefined,
-      producedName: r.produced_name ? String(r.produced_name) : undefined,
-      locationTag: String(r.location_tag),
-      quantity: typeof r.quantity === 'number' ? r.quantity : parseFloat(r.quantity ?? 0) || 0,
-      unit: String(r.unit ?? ''),
-      reorderLevel: r.reorder_level === null || r.reorder_level === undefined ? undefined : (typeof r.reorder_level === 'number' ? r.reorder_level : parseFloat(r.reorder_level) || 0),
-      updatedAt: r.updated_at ? String(r.updated_at) : null,
-      // Null-safe fallback for produced goods rows
-      itemName: r.produced_name ? String(r.produced_name) : undefined,
-      itemCode: r.produced_code ? String(r.produced_code) : undefined,
-    })) as FrontStockRow[];
+    if (!rows.length) {
+      const { data: frontRows, error: frontErr } = await supabase
+        .from('front_stock')
+        .select('id, brand_id, item_id, produced_code, produced_name, location_tag, quantity, unit, reorder_level, updated_at')
+        .eq('brand_id', brandId);
+
+      if (frontErr) {
+        console.warn('[frontStockStore] failed to fetch front_stock', frontErr);
+        return;
+      }
+
+      rows = mapFrontRows(Array.isArray(frontRows) ? frontRows : []);
+    }
 
     // Join item name/code via a second query to avoid relying on relationship names.
     const itemIds = Array.from(new Set(rows.map((r) => r.itemId))).filter(Boolean);
-    if (itemIds.length) {
+    if (itemIds.length && rows.some((r) => !r.itemCode || !r.itemName)) {
       const { data: items, error: itemsErr } = await supabase
         .from('stock_items')
         .select('id, item_code, name')

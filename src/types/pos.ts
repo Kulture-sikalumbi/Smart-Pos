@@ -37,6 +37,11 @@ export interface OrderItem {
 export interface Order {
   id: string;
   orderNo: number;
+  /** Server-side cashier shift id (X/Z reporting). */
+  shiftId?: string;
+  tillId?: string;
+  tillCode?: string;
+  tillName?: string;
   tableId?: string;
   tableNo?: number;
   orderType: OrderType;

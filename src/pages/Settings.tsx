@@ -19,7 +19,8 @@ import { useCurrency } from '@/contexts/CurrencyContext';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { cn } from '@/lib/utils';
-import { Check, ChevronsUpDown } from 'lucide-react';
+import { Building2, Check, ChevronsUpDown, Cpu, ReceiptText, Tags, Truck, WalletCards } from 'lucide-react';
+import { getAllCurrencyCodes } from '@/lib/currencyOptions';
 
 export default function Settings() {
   const { hasPermission } = useAuth();
@@ -62,21 +63,13 @@ export default function Settings() {
   const [editingSupplierCode, setEditingSupplierCode] = useState('');
 
   const currencyOptions = useMemo(() => {
-    try {
-      // Supported in modern browsers; gives a big list.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const fn = (Intl as any)?.supportedValuesOf;
-      const list = typeof fn === 'function' ? (fn('currency') as string[]) : null;
-      if (Array.isArray(list) && list.length) return list;
-    } catch {
-      // ignore
-    }
-    return ['ZMW', 'USD', 'ZAR', 'EUR', 'GBP'];
+    return getAllCurrencyCodes();
   }, []);
 
   const [currencyDraft, setCurrencyDraft] = useState<string>(() => String(currencyCode ?? 'ZMW').toUpperCase());
   const [currencyPickerOpen, setCurrencyPickerOpen] = useState(false);
   const [currencySearch, setCurrencySearch] = useState('');
+  const [activeTile, setActiveTile] = useState<'branding' | 'advanced' | 'tills' | 'currency' | 'receipt' | 'categories' | 'suppliers'>('branding');
 
   useEffect(() => {
     setCurrencyDraft(String(currencyCode ?? 'ZMW').toUpperCase());
@@ -162,7 +155,54 @@ export default function Settings() {
     <div>
       <PageHeader title="Settings" description="System configuration and preferences" />
 
-      <Card className="mb-6">
+      <div className="mb-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3">
+        <Card className={`cursor-pointer transition-colors ${activeTile === 'branding' ? 'border-primary' : 'border-border/60'}`} onClick={() => setActiveTile('branding')}>
+          <CardContent className="p-3">
+            <div className="flex items-center gap-2 text-sm font-medium"><Building2 className="h-4 w-4" /> Brand</div>
+            <div className="text-[11px] text-muted-foreground mt-1">Name and visual identity</div>
+          </CardContent>
+        </Card>
+        <Card className={`cursor-pointer transition-colors ${activeTile === 'advanced' ? 'border-primary' : 'border-border/60'}`} onClick={() => setActiveTile('advanced')}>
+          <CardContent className="p-3">
+            <div className="flex items-center gap-2 text-sm font-medium"><Cpu className="h-4 w-4" /> Advanced</div>
+            <div className="text-[11px] text-muted-foreground mt-1">Feature switches</div>
+          </CardContent>
+        </Card>
+        {hasPermission('manageSettings') ? (
+          <Card className={`cursor-pointer transition-colors ${activeTile === 'tills' ? 'border-primary' : 'border-border/60'}`} onClick={() => setActiveTile('tills')}>
+            <CardContent className="p-3">
+              <div className="flex items-center gap-2 text-sm font-medium"><WalletCards className="h-4 w-4" /> Tills</div>
+              <div className="text-[11px] text-muted-foreground mt-1">Devices and till mapping</div>
+            </CardContent>
+          </Card>
+        ) : null}
+        <Card className={`cursor-pointer transition-colors ${activeTile === 'currency' ? 'border-primary' : 'border-border/60'}`} onClick={() => setActiveTile('currency')}>
+          <CardContent className="p-3">
+            <div className="flex items-center gap-2 text-sm font-medium"><WalletCards className="h-4 w-4" /> Currency</div>
+            <div className="text-[11px] text-muted-foreground mt-1">Global money format</div>
+          </CardContent>
+        </Card>
+        <Card className={`cursor-pointer transition-colors ${activeTile === 'receipt' ? 'border-primary' : 'border-border/60'}`} onClick={() => setActiveTile('receipt')}>
+          <CardContent className="p-3">
+            <div className="flex items-center gap-2 text-sm font-medium"><ReceiptText className="h-4 w-4" /> Receipts</div>
+            <div className="text-[11px] text-muted-foreground mt-1">Logo, footer, print setup</div>
+          </CardContent>
+        </Card>
+        <Card className={`cursor-pointer transition-colors ${activeTile === 'categories' ? 'border-primary' : 'border-border/60'}`} onClick={() => setActiveTile('categories')}>
+          <CardContent className="p-3">
+            <div className="flex items-center gap-2 text-sm font-medium"><Tags className="h-4 w-4" /> Categories</div>
+            <div className="text-[11px] text-muted-foreground mt-1">Manage departments</div>
+          </CardContent>
+        </Card>
+        <Card className={`cursor-pointer transition-colors ${activeTile === 'suppliers' ? 'border-primary' : 'border-border/60'}`} onClick={() => setActiveTile('suppliers')}>
+          <CardContent className="p-3">
+            <div className="flex items-center gap-2 text-sm font-medium"><Truck className="h-4 w-4" /> Suppliers</div>
+            <div className="text-[11px] text-muted-foreground mt-1">Contacts and codes</div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {activeTile === 'branding' ? <Card className="mb-6">
         <CardHeader>
           <CardTitle className="text-base">Branding</CardTitle>
         </CardHeader>
@@ -190,9 +230,9 @@ export default function Settings() {
             )}
           </div>
         </CardContent>
-      </Card>
+      </Card> : null}
 
-      <Card className="mb-6">
+      {activeTile === 'advanced' ? <Card className="mb-6">
         <CardHeader>
           <CardTitle className="text-base">Advanced</CardTitle>
         </CardHeader>
@@ -223,9 +263,133 @@ export default function Settings() {
             </div>
           </div>
         </CardContent>
-      </Card>
+      </Card> : null}
 
-      <Card className="mb-6">
+      {hasPermission('manageSettings') && activeTile === 'tills' ? (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle className="text-base">Tills & POS Terminals</CardTitle>
+          </CardHeader>
+          <CardContent className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <div className="text-sm font-medium">Till management</div>
+              <div className="text-xs text-muted-foreground">
+                Create custom till names (e.g. Bar, Front Counter) and review device-to-till assignments.
+              </div>
+            </div>
+            <Button asChild variant="outline">
+              <NavLink to="/app/settings/tills">Open</NavLink>
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {activeTile === 'currency' ? <Card className="mb-6">
+        <CardHeader>
+          <CardTitle className="text-base">Global Currency</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2 items-end">
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Currency code</div>
+              <Popover open={currencyPickerOpen} onOpenChange={setCurrencyPickerOpen}>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={currencyPickerOpen}
+                    className="w-full justify-between"
+                    disabled={!hasPermission('manageSettings')}
+                  >
+                    <span className="truncate">{currencyDraft || 'Select currency'}</span>
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[340px] p-0" align="start">
+                  <Command>
+                    <CommandInput
+                      placeholder="Search currency code… (e.g. ZMW, USD)"
+                      value={currencySearch}
+                      onValueChange={(v) => setCurrencySearch(String(v ?? '').toUpperCase())}
+                    />
+                    <CommandList>
+                      <CommandEmpty>
+                        {currencySearch.trim() ? (
+                          <span className="text-sm">No match. Use “{currencySearch.trim().toUpperCase()}”.</span>
+                        ) : (
+                          <span className="text-sm">Type to search currencies.</span>
+                        )}
+                      </CommandEmpty>
+
+                      <CommandGroup heading="Select">
+                        {(currencySearch.trim() ? [currencySearch.trim().toUpperCase()] : [])
+                          .filter((x) => x.length > 0)
+                          .map((custom) => (
+                            <CommandItem
+                              key={`custom-${custom}`}
+                              value={custom}
+                              onSelect={() => {
+                                setCurrencyDraft(custom);
+                                setCurrencyPickerOpen(false);
+                                setCurrencySearch('');
+                              }}
+                            >
+                              <Check className={cn('mr-2 h-4 w-4', currencyDraft === custom ? 'opacity-100' : 'opacity-0')} />
+                              Use “{custom}”
+                            </CommandItem>
+                          ))}
+                      </CommandGroup>
+
+                      <CommandGroup heading="All currencies">
+                        {currencyOptions.map((c) => (
+                          <CommandItem
+                            key={c}
+                            value={c}
+                            onSelect={(val) => {
+                              const next = String(val || c).toUpperCase();
+                              setCurrencyDraft(next);
+                              setCurrencyPickerOpen(false);
+                              setCurrencySearch('');
+                            }}
+                          >
+                            <Check className={cn('mr-2 h-4 w-4', currencyDraft === c ? 'opacity-100' : 'opacity-0')} />
+                            {c}
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+              <div className="text-xs text-muted-foreground">
+                Search and pick a currency or type a custom code. This affects headers, reports, POS totals, and receipts.
+              </div>
+            </div>
+
+            <Button
+              variant="outline"
+              onClick={() => {
+                if (!hasPermission('manageSettings')) return;
+                const next = (currencyDraft.trim().toUpperCase() || 'ZMW') as any;
+                setCurrencyCode(next);
+                setReceiptSettings((s) => ({ ...s, currencyCode: next as ReceiptSettings['currencyCode'] }));
+                try {
+                  saveReceiptSettings({ ...getReceiptSettings(), currencyCode: next as ReceiptSettings['currencyCode'] });
+                } catch {
+                  // ignore
+                }
+                setSavedAt(new Date().toLocaleTimeString());
+              }}
+              disabled={!hasPermission('manageSettings') || !currencyDraft.trim()}
+            >
+              Apply currency
+            </Button>
+          </div>
+        </CardContent>
+      </Card> : null}
+
+      {activeTile === 'receipt' ? <Card className="mb-6">
         <CardHeader>
           <CardTitle className="text-base">Receipt Settings</CardTitle>
         </CardHeader>
@@ -242,22 +406,6 @@ export default function Settings() {
                 Zambia uses smart QR for verification; others use review/digital links.
               </div>
             </div>
-
-            <div className="space-y-1">
-              <div className="text-sm font-medium">Currency</div>
-              <Input
-                value={String(receiptSettings.currencyCode ?? currencyCode ?? 'ZMW').toUpperCase()}
-                onChange={(e) => {
-                  if (!hasPermission('manageSettings')) return;
-                  const next = String(e.target.value ?? '').toUpperCase() as ReceiptSettings['currencyCode'];
-                  setReceiptSettings((s) => ({ ...s, currencyCode: next }));
-                  setCurrencyDraft(next);
-                }}
-                placeholder="ZMW"
-                disabled={!hasPermission('manageSettings')}
-              />
-              <div className="text-xs text-muted-foreground">Used for totals and USD conversion.</div>
-            </div>
           </div>
 
           <div className="space-y-1">
@@ -268,6 +416,27 @@ export default function Settings() {
               placeholder="Paste your required legal text here..."
               rows={4}
             />
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-sm font-medium">Receipt logo URL</div>
+            <Input
+              value={receiptSettings.logoUrl ?? ''}
+              onChange={(e) => setReceiptSettings((s) => ({ ...s, logoUrl: e.target.value || undefined }))}
+              placeholder="https://..."
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setReceiptSettings((s) => ({ ...s, logoUrl: settings.logoDataUrl || undefined }))}
+                disabled={!settings.logoDataUrl}
+              >
+                Use brand logo
+              </Button>
+              <div className="text-xs text-muted-foreground">Shown on printed and digital receipts.</div>
+            </div>
           </div>
 
           <div className="flex items-center justify-between gap-4 px-1">
@@ -308,10 +477,12 @@ export default function Settings() {
             {savedAt && <div className="text-xs text-muted-foreground">Saved at {savedAt}</div>}
           </div>
         </CardContent>
-      </Card>
+      </Card> : null}
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">Categories</CardTitle></CardHeader>
+      {activeTile === 'categories' ? <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Categories</CardTitle>
+        </CardHeader>
         <CardContent>
           <div className="mb-4 flex gap-2">
             <Input
@@ -414,10 +585,12 @@ export default function Settings() {
             )}
           </div>
         </CardContent>
-      </Card>
+      </Card> : null}
 
-      <Card className="mt-6">
-        <CardHeader><CardTitle className="text-base">Suppliers</CardTitle></CardHeader>
+      {activeTile === 'suppliers' ? <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="text-base">Suppliers</CardTitle>
+        </CardHeader>
         <CardContent>
           <div className="mb-4 flex gap-2">
             <Input
@@ -537,106 +710,8 @@ export default function Settings() {
             )}
           </div>
 
-          <div className="mt-6 grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2 items-end">
-            <div className="space-y-1">
-              <div className="text-sm font-medium">Currency code</div>
-              <Popover open={currencyPickerOpen} onOpenChange={setCurrencyPickerOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    role="combobox"
-                    aria-expanded={currencyPickerOpen}
-                    className="w-full justify-between"
-                    disabled={!hasPermission('manageSettings')}
-                  >
-                    <span className="truncate">{currencyDraft || 'Select currency'}</span>
-                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent className="w-[340px] p-0" align="start">
-                  <Command>
-                    <CommandInput
-                      placeholder="Search currency code… (e.g. ZMW, USD)"
-                      value={currencySearch}
-                      onValueChange={(v) => setCurrencySearch(String(v ?? '').toUpperCase())}
-                    />
-                    <CommandList>
-                      <CommandEmpty>
-                        {currencySearch.trim() ? (
-                          <span className="text-sm">No match. Use “{currencySearch.trim().toUpperCase()}”.</span>
-                        ) : (
-                          <span className="text-sm">Type to search currencies.</span>
-                        )}
-                      </CommandEmpty>
-
-                      <CommandGroup heading="Select">
-                        {(currencySearch.trim() ? [currencySearch.trim().toUpperCase()] : [])
-                          .filter((x) => x.length > 0)
-                          .map((custom) => (
-                            <CommandItem
-                              key={`custom-${custom}`}
-                              value={custom}
-                              onSelect={() => {
-                                setCurrencyDraft(custom);
-                                setCurrencyPickerOpen(false);
-                                setCurrencySearch('');
-                              }}
-                            >
-                              <Check className={cn('mr-2 h-4 w-4', currencyDraft === custom ? 'opacity-100' : 'opacity-0')} />
-                              Use “{custom}”
-                            </CommandItem>
-                          ))}
-                      </CommandGroup>
-
-                      <CommandGroup heading="All currencies">
-                        {currencyOptions.slice(0, 500).map((c) => (
-                          <CommandItem
-                            key={c}
-                            value={c}
-                            onSelect={(val) => {
-                              const next = String(val || c).toUpperCase();
-                              setCurrencyDraft(next);
-                              setCurrencyPickerOpen(false);
-                              setCurrencySearch('');
-                            }}
-                          >
-                            <Check className={cn('mr-2 h-4 w-4', currencyDraft === c ? 'opacity-100' : 'opacity-0')} />
-                            {c}
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
-              <div className="text-xs text-muted-foreground">
-                Search and pick a currency (big list), or type a custom code. The whole app shows the correct currency symbol (e.g. ZMW → K, USD → $).
-              </div>
-            </div>
-
-            <Button
-              variant="outline"
-              onClick={() => {
-                if (!hasPermission('manageSettings')) return;
-                const next = (currencyDraft.trim().toUpperCase() || 'ZMW') as any;
-                setCurrencyCode(next);
-                // Mirror into receipt settings immediately so print/receipts stay consistent.
-                setReceiptSettings((s) => ({ ...s, currencyCode: next as ReceiptSettings['currencyCode'] }));
-                try {
-                  saveReceiptSettings({ ...getReceiptSettings(), currencyCode: next as ReceiptSettings['currencyCode'] });
-                } catch {
-                  // ignore
-                }
-                setSavedAt(new Date().toLocaleTimeString());
-              }}
-              disabled={!hasPermission('manageSettings') || !currencyDraft.trim()}
-            >
-              Apply currency
-            </Button>
-          </div>
         </CardContent>
-      </Card>
+      </Card> : null}
     </div>
   );
 }

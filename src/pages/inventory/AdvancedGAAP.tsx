@@ -22,16 +22,14 @@ import { resetPosMenuToDefaults } from '@/lib/posMenuStore';
 import { computeMaxProducible, defaultQtyForUnitType, recommendSellingPrice, type PriceRounding, suggestIngredients } from '@/lib/mthunziSmartAssistant';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
-
-function fmtMoney(n: number) {
-  return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'ZMW' }).format(n);
-}
+import { useCurrency } from '@/contexts/CurrencyContext';
 
 function fmtPct(n: number) {
   return `${n.toFixed(2)}%`;
 }
 
 export default function AdvancedGAAP() {
+  const { formatMoneyPrecise } = useCurrency();
   const { user, brand, accountUser } = useAuth();
   const pos = usePosMenu();
   const stockItems = useSyncExternalStore(subscribeStockItems, getStockItemsSnapshot);
@@ -59,6 +57,7 @@ export default function AdvancedGAAP() {
   const [targetGp, setTargetGp] = useState<number>(60);
   const [autoPrice, setAutoPrice] = useState(false);
   const [priceRounding, setPriceRounding] = useState<PriceRounding>('0.5');
+  const fmtMoney = (n: number) => formatMoneyPrecise(Number(n) || 0, 2);
 
   useEffect(() => {
     if (!menuItems.length) return;

@@ -4,7 +4,7 @@ import { AppSidebar } from './AppSidebar';
 import { SidebarProvider, SidebarTrigger, SidebarInset } from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
 import { ChevronDown } from 'lucide-react';
-import { Boxes, ChefHat, ClipboardList, Grid3X3, MonitorSmartphone, UtensilsCrossed } from 'lucide-react';
+import { Grid3X3 } from 'lucide-react';
 import LowStockAlerts from '@/components/common/LowStockAlerts';
 import SyncStatusIndicator from '@/components/layout/SyncStatusIndicator';
 import { Badge } from '@/components/ui/badge';
@@ -35,48 +35,21 @@ export function MainLayout() {
   const isKitchenDisplay = location.pathname === '/app/pos/kitchen';
 
   if (isPosTerminal || isSelfOrder || isKitchenDisplay) {
-    const role = String(user?.role ?? '').toLowerCase();
     const canUseTables = hasPermission('transferTables');
-    const canUseKitchen = role === 'owner' || role === 'manager' || role === 'front_supervisor' || role === 'kitchen_staff';
-    const canUseBatchProduction = hasPermission('recordBatchProduction');
-    const canUsePos = hasPermission('accessPOS');
 
     return (
       <div className="min-h-screen w-full bg-background relative">
-        {!isSelfOrder && (
-          <div className="absolute top-3 left-3 z-50 flex items-center gap-2 rounded-xl border border-white/15 bg-background/85 p-2 backdrop-blur-xl shadow-lg">
-            <Button size="sm" variant="outline" onClick={() => navigate('/hub')}>
-              <ChefHat className="h-4 w-4 mr-1" />
-              Hub
+        {!isSelfOrder && isPosTerminal && canUseTables && (
+          <div className="absolute bottom-4 right-4 z-50">
+            <Button
+              size="sm"
+              variant="outline"
+              className="rounded-full border-white/20 bg-background/85 backdrop-blur-xl shadow-lg"
+              onClick={() => navigate('/app/pos/tables')}
+            >
+              <Grid3X3 className="h-4 w-4 mr-1" />
+              Tables
             </Button>
-            <Button size="sm" variant="outline" onClick={() => navigate('/app/front-office')}>
-              <ClipboardList className="h-4 w-4 mr-1" />
-              Front Office
-            </Button>
-            {canUseBatchProduction && (
-              <Button size="sm" variant="outline" onClick={() => navigate('/app/manufacturing/production')}>
-                <Boxes className="h-4 w-4 mr-1" />
-                Batch
-              </Button>
-            )}
-            {canUsePos && (
-              <Button size="sm" variant="outline" onClick={() => navigate('/app/pos/terminal')}>
-                <MonitorSmartphone className="h-4 w-4 mr-1" />
-                POS
-              </Button>
-            )}
-            {canUseKitchen && (
-              <Button size="sm" variant="outline" onClick={() => navigate('/app/pos/kitchen')}>
-                <UtensilsCrossed className="h-4 w-4 mr-1" />
-                Kitchen
-              </Button>
-            )}
-            {canUseTables && (
-              <Button size="sm" variant="outline" onClick={() => navigate('/app/pos/tables')}>
-                <Grid3X3 className="h-4 w-4 mr-1" />
-                Tables
-              </Button>
-            )}
           </div>
         )}
         <div className="absolute top-3 right-3 z-50">
@@ -106,7 +79,7 @@ export function MainLayout() {
             </div>
             <div className="flex items-center gap-2">
               <SyncStatusIndicator />
-              <CurrencyPicker className="hidden sm:block" />
+              <CurrencyPicker className="hidden sm:block" disabled={!hasPermission('manageSettings')} />
               <LowStockAlerts />
               {/* User Menu */}
               <DropdownMenu>

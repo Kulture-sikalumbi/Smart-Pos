@@ -261,6 +261,59 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
   },
 };
 
+export function isAdminLikeRole(role: string | undefined | null) {
+  const normalized = String(role ?? '').toLowerCase();
+  return normalized === 'owner' || normalized === 'admin';
+}
+
+export function getDefaultAppRouteForRole(role: string | undefined | null) {
+  const normalized = String(role ?? '').toLowerCase();
+  if (normalized === 'cashier') return '/app/pos/terminal';
+  if (normalized === 'kitchen_staff') return '/app/pos/kitchen';
+  if (normalized === 'waitron' || normalized === 'bar_staff') return '/app/pos/terminal';
+  if (normalized === 'front_supervisor' || normalized === 'manager' || isAdminLikeRole(normalized)) return '/hub';
+  return '/app/pos/terminal';
+}
+
+export function canAccessRouteForRole(role: string | undefined | null, pathname: string) {
+  const normalized = String(role ?? '').toLowerCase();
+  const path = String(pathname ?? '');
+
+  if (isAdminLikeRole(normalized)) return true;
+
+  if (normalized === 'cashier' || normalized === 'waitron' || normalized === 'bar_staff') {
+    return path === '/app/pos' || path.startsWith('/app/pos/terminal') || path.startsWith('/app/pos/tables');
+  }
+
+  if (normalized === 'kitchen_staff') {
+    return (
+      path.startsWith('/app/pos/kitchen') ||
+      path.startsWith('/app/manufacturing/production') ||
+      path.startsWith('/app/inventory/front-office-stock')
+    );
+  }
+
+  if (normalized === 'front_supervisor') {
+    return (
+      path.startsWith('/app/front-office') ||
+      path.startsWith('/app/pos/') ||
+      path.startsWith('/app/manufacturing/') ||
+      path.startsWith('/app/inventory/front-office-stock') ||
+      path.startsWith('/app/inventory/front-stock-take') ||
+      path.startsWith('/app/inventory/transfer-qr') ||
+      path.startsWith('/app/inventory/stock-issues') ||
+      path.startsWith('/app/reports') ||
+      path.startsWith('/app/receipt-demo')
+    );
+  }
+
+  if (normalized === 'manager') {
+    return !path.startsWith('/app/settings') && path !== '/hub' && !path.startsWith('/app/company-settings');
+  }
+
+  return path === getDefaultAppRouteForRole(normalized);
+}
+
 // Role display names
 export const ROLE_NAMES: Record<UserRole, string> = {
   owner: 'Owner',

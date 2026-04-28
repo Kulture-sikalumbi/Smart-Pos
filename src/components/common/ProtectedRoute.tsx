@@ -1,10 +1,12 @@
 import React from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import BrandActivationModal from '@/components/common/BrandActivationModal';
+import { canAccessRouteForRole, getDefaultAppRouteForRole, isAdminLikeRole } from '@/types/auth';
 
 export function ProtectedRoute({ children }: { children: JSX.Element }) {
   const { isAuthenticated, user, brand, brandIsActive } = useAuth();
+  const location = useLocation();
   if (!isAuthenticated) return <Navigate to="/login" replace />;
 
   // Hard-block all protected routes immediately when the brand is inactive.
@@ -21,6 +23,18 @@ export function ProtectedRoute({ children }: { children: JSX.Element }) {
         />
       </div>
     );
+  }
+
+  const role = String(user?.role ?? '').toLowerCase();
+  const path = location.pathname;
+  const adminLike = isAdminLikeRole(role);
+
+  if (!adminLike && (path === '/hub' || path.startsWith('/app/settings') || path.startsWith('/app/company-settings'))) {
+    return <Navigate to={getDefaultAppRouteForRole(role)} replace />;
+  }
+
+  if (!canAccessRouteForRole(role, path)) {
+    return <Navigate to={getDefaultAppRouteForRole(role)} replace />;
   }
 
   return children;

@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { CurrencyCode, ReceiptSettings } from '@/types';
 import { useAuth } from '@/contexts/AuthContext';
+import { useBranding } from '@/contexts/BrandingContext';
 import { supabase } from '@/lib/supabaseClient';
 import {
   getReceiptSettingsSnapshot,
@@ -12,6 +13,8 @@ type CurrencyModel = {
   currencyCode: CurrencyCode;
   currencySymbol: string;
   setCurrencyCode: (code: CurrencyCode) => void;
+  currencySyncState: 'idle' | 'saving' | 'saved' | 'error';
+  currencySyncMessage?: string;
   formatMoney: (amount: number) => string;
   formatMoneyPrecise: (amount: number, decimals: number) => string;
   formatNumber: (amount: number, opts?: Intl.NumberFormatOptions) => string;
@@ -67,8 +70,10 @@ function formatCurrencyIntl(amount: number, currency: string, decimals = 2) {
 
 export function CurrencyProvider(props: { children: React.ReactNode }) {
   const { brand, user } = useAuth();
+  const { settings: brandingSettings, updateSettings, saveToServer } = useBranding();
   const brandId = String((brand as any)?.id ?? (user as any)?.brand_id ?? '');
   const brandCurrencyCode = (brand as any)?.brand_currency_code as CurrencyCode | undefined;
+  const overrideStorageKey = brandId ? `pmx.currency.pending.v1.${brandId}` : 'pmx.currency.pending.v1.none';
 
   const receiptSettings = useSyncExternalStore(
     subscribeReceiptSettings,
@@ -76,47 +81,106 @@ export function CurrencyProvider(props: { children: React.ReactNode }) {
     getReceiptSettingsSnapshot
   );
 
-  const [overrideCode, setOverrideCode] = useState<CurrencyCode | null>(null);
+  const [overrideCode, setOverrideCode] = useState<CurrencyCode | null>(() => {
+    try {
+      const raw = localStorage.getItem(overrideStorageKey);
+      return raw ? (String(raw).toUpperCase() as CurrencyCode) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [currencySyncState, setCurrencySyncState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [currencySyncMessage, setCurrencySyncMessage] = useState<string | undefined>(undefined);
 
   // Reset any local override when switching brands.
   useEffect(() => {
-    setOverrideCode(null);
-  }, [brandId]);
+    try {
+      const raw = localStorage.getItem(overrideStorageKey);
+      setOverrideCode(raw ? (String(raw).toUpperCase() as CurrencyCode) : null);
+    } catch {
+      setOverrideCode(null);
+    }
+  }, [overrideStorageKey]);
 
-  // Keep receipt settings aligned with the brand currency to prevent symbol flicker
-  // between early (cached) renders and the async brand profile hydrate.
+  const receiptCurrencyCode = (receiptSettings as ReceiptSettings).currencyCode;
+  const brandingCurrencyCode = (brandingSettings as any)?.currencyCode as CurrencyCode | undefined;
+  const effectiveCurrencyCode = (overrideCode ?? brandCurrencyCode ?? brandingCurrencyCode ?? receiptCurrencyCode ?? 'ZMW') as CurrencyCode;
+
+  // Keep receipt settings aligned with the effective code (override > brand > local),
+  // which avoids stale-hydration resets while still converging to the persisted brand currency.
   useEffect(() => {
     if (!brandId) return;
-    if (!brandCurrencyCode) return;
-    if (overrideCode) return;
     const current = (receiptSettings as ReceiptSettings)?.currencyCode ?? 'ZMW';
-    if (current === brandCurrencyCode) return;
-    saveReceiptSettings({ ...(receiptSettings as ReceiptSettings), currencyCode: brandCurrencyCode });
-  }, [brandId, brandCurrencyCode, overrideCode, receiptSettings]);
+    if (current === effectiveCurrencyCode) return;
+    saveReceiptSettings({ ...(receiptSettings as ReceiptSettings), currencyCode: effectiveCurrencyCode });
+  }, [brandId, effectiveCurrencyCode, receiptSettings]);
+
+  // Once server brand currency catches up to local override, clear pending override.
+  useEffect(() => {
+    if (!brandId) return;
+    if (!overrideCode) return;
+    if (!brandCurrencyCode) return;
+    if (String(brandCurrencyCode).toUpperCase() !== String(overrideCode).toUpperCase()) return;
+    try {
+      localStorage.removeItem(overrideStorageKey);
+    } catch {
+      // ignore
+    }
+    setOverrideCode(null);
+  }, [brandId, brandCurrencyCode, overrideCode, overrideStorageKey]);
 
   if (!receiptSettings) {
     throw new Error("CurrencyProvider: receiptSettings is null or undefined.");
   }
 
   const model = useMemo<CurrencyModel>(() => {
-    const receiptCurrencyCode = (receiptSettings as ReceiptSettings).currencyCode;
-    const currencyCode = (overrideCode ?? brandCurrencyCode ?? receiptCurrencyCode ?? 'ZMW') as CurrencyCode;
+    const currencyCode = effectiveCurrencyCode;
     const currencySymbol = currencySymbolFromCode(currencyCode);
 
     return {
       currencyCode,
       currencySymbol,
+      currencySyncState,
+      currencySyncMessage,
       setCurrencyCode: (code) => {
         setOverrideCode(code);
+        setCurrencySyncState('saving');
+        setCurrencySyncMessage('Saving currency...');
+        updateSettings({ currencyCode: code });
+        try {
+          localStorage.setItem(overrideStorageKey, String(code).toUpperCase());
+        } catch {
+          // ignore
+        }
         const cur = getReceiptSettingsSnapshot();
         saveReceiptSettings({ ...cur, currencyCode: code });
 
         // Persist to the brand row when available.
         if (supabase && brandId) {
-          void supabase
+          const directUpdate = supabase
             .from('brands')
             .update({ brand_currency_code: code })
-            .eq('id', brandId);
+            .eq('id', brandId)
+            .then((res) => {
+              if ((res as any)?.error) {
+                throw (res as any).error;
+              }
+              return true;
+            });
+          const viaBranding = saveToServer({ currencyCode: code });
+          void Promise.allSettled([directUpdate, viaBranding]).then((results) => {
+            const ok = results.some((r) => r.status === 'fulfilled' && r.value);
+            if (ok) {
+              setCurrencySyncState('saved');
+              setCurrencySyncMessage('Saved to brand');
+            } else {
+              setCurrencySyncState('error');
+              setCurrencySyncMessage('Saved locally only; brand save failed');
+            }
+          });
+        } else {
+          setCurrencySyncState('saved');
+          setCurrencySyncMessage('Saved locally');
         }
       },
       formatNumber: (amount, opts) => {
@@ -130,7 +194,7 @@ export function CurrencyProvider(props: { children: React.ReactNode }) {
         return formatCurrencyIntl(amount, currencyCode, decimals);
       },
     };
-  }, [receiptSettings, brand, brandId, overrideCode]);
+  }, [brandId, effectiveCurrencyCode, overrideStorageKey, updateSettings, saveToServer, currencySyncState, currencySyncMessage]);
 
   return <CurrencyContext.Provider value={model}>{props.children}</CurrencyContext.Provider>;
 }

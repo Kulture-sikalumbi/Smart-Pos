@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { UserCog } from 'lucide-react';
+import { getDefaultAppRouteForRole } from '@/types/auth';
 
 interface LoginOverlayProps {
   onClose?: () => void;
@@ -59,7 +60,7 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
         );
         if (res.ok) {
           if ((res as any).autoSignedIn) {
-            navigate('/hub');
+            navigate('/hub', { replace: true });
             return;
           }
           setShowSuccess(true);
@@ -77,7 +78,7 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
       const cleanSecret = secret.trim();
       const adminOk = await withTimeout(auth.login(cleanEmail, cleanSecret), 20000);
       if (adminOk) {
-        navigate('/hub');
+        navigate('/hub', { replace: true });
         return;
       }
 
@@ -88,15 +89,7 @@ export default function LoginOverlay({ onClose }: LoginOverlayProps) {
           setError(staffRes.message || 'Invalid credentials');
           return;
         }
-        if (staffRes.role === 'kitchen_staff') {
-          navigate('/app/pos/kitchen');
-          return;
-        }
-        if (staffRes.role === 'cashier') {
-          navigate('/app/pos');
-          return;
-        }
-        navigate('/hub');
+        navigate(getDefaultAppRouteForRole(staffRes.role), { replace: true });
         return;
       }
 

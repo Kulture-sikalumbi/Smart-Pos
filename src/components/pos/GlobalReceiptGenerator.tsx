@@ -93,6 +93,11 @@ export default function GlobalReceiptGenerator(props: {
     <Card className="mthunzi-card max-w-md mx-auto">
       <CardHeader>
         <CardTitle className="text-base">Receipt</CardTitle>
+        {settings.logoUrl ? (
+          <div className="pt-1">
+            <img src={settings.logoUrl} alt="Receipt logo" className="h-10 w-10 rounded object-cover border border-border" />
+          </div>
+        ) : null}
         <div className="text-xs text-muted-foreground">
           <div>Receipt: {receipt.receiptId}</div>
           <div>{new Date(receipt.issuedAt).toLocaleString()}</div>

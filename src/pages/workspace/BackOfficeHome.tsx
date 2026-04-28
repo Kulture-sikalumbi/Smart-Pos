@@ -1,26 +1,44 @@
-import { BarChart3, ClipboardCheck, Package, Settings, ShoppingCart, Users } from 'lucide-react';
+import { ArrowRightLeft, BarChart3, ClipboardCheck, LayoutDashboard, Package, Receipt, Settings, ShoppingCart, Users } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '@/contexts/AuthContext';
+import type { UserRole } from '@/types/auth';
+import type { RolePermissions } from '@/types/auth';
+import type { ComponentType } from 'react';
 
-const tools = [
-  { label: 'Dashboard', icon: BarChart3, path: '/app/dashboard' },
-  { label: 'Stock Items', icon: Package, path: '/app/inventory/items' },
-  { label: 'Purchases (GRV)', icon: ShoppingCart, path: '/app/purchases' },
-  { label: 'Stock Issues', icon: ClipboardCheck, path: '/app/inventory/stock-issues' },
-  { label: 'Staff', icon: Users, path: '/app/staff' },
-  { label: 'Settings', icon: Settings, path: '/app/settings' },
+const tools: Array<{
+  label: string;
+  icon: ComponentType<{ className?: string }>;
+  path: string;
+  permission: keyof RolePermissions;
+  roles?: UserRole[];
+}> = [
+  { label: 'Dashboard', icon: LayoutDashboard, path: '/app/dashboard', permission: 'viewDashboard' },
+  { label: 'Stock Items', icon: Package, path: '/app/inventory/items', permission: 'viewInventory' },
+  { label: 'Purchases (GRV)', icon: ShoppingCart, path: '/app/purchases', permission: 'viewPurchases' },
+  { label: 'Stock Issues', icon: ArrowRightLeft, path: '/app/inventory/stock-issues', permission: 'createStockIssues' },
+  { label: 'Stock Take', icon: ClipboardCheck, path: '/app/inventory/stock-take', permission: 'performStockTake' },
+  { label: 'Staff', icon: Users, path: '/app/staff', permission: 'viewStaff' },
+  { label: 'Reports', icon: BarChart3, path: '/app/reports', permission: 'viewReports' },
+  { label: 'Shift X/Z Reports', icon: Receipt, path: '/app/reports/shifts', permission: 'viewReports' },
+  { label: 'Till Management', icon: Receipt, path: '/app/settings/tills', permission: 'manageSettings' },
+  { label: 'Settings', icon: Settings, path: '/app/settings', permission: 'manageSettings' },
 ];
 
 export default function BackOfficeHome() {
   const navigate = useNavigate();
+  const { hasPermission, user } = useAuth();
+  const role = (user?.role ?? 'cashier') as UserRole;
+  const visibleTools = tools.filter((tool) => hasPermission(tool.permission) && (!tool.roles || tool.roles.includes(role)));
+
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Back Office Workspace</h1>
-        <p className="text-sm text-muted-foreground">Choose a tool to continue operations.</p>
+        <p className="text-sm text-muted-foreground">All back-office tools are available here based on your role permissions.</p>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {tools.map((tool) => (
+        {visibleTools.map((tool) => (
           <Card
             key={tool.path}
             className="cursor-pointer border-blue-500/20 hover:border-blue-400/60 transition-colors"
