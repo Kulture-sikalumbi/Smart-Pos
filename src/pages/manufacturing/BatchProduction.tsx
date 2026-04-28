@@ -97,6 +97,20 @@ export default function BatchProduction() {
       setIsSubmitting(false);
       return;
     }
+    if (selectedRecipe?.outputUnitType === 'EACH' && !Number.isInteger(actualOutput)) {
+      const msg = 'Actual output must be a whole number for EACH unit items.';
+      setRecordErrorMessage(msg);
+      toast({ title: 'Invalid output', description: msg, variant: 'destructive' });
+      setIsSubmitting(false);
+      return;
+    }
+    if (selectedRecipe?.outputUnitType === 'EACH' && theoreticalOutput > 0 && !Number.isInteger(theoreticalOutput)) {
+      const msg = 'Theoretical output must be a whole number for EACH unit items.';
+      setRecordErrorMessage(msg);
+      toast({ title: 'Invalid output', description: msg, variant: 'destructive' });
+      setIsSubmitting(false);
+      return;
+    }
     const theo = theoreticalOutput > 0 ? theoreticalOutput : actualOutput;
 
     try {
@@ -369,11 +383,23 @@ function RecordBatchDialog(props: {
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Theoretical output</Label>
-              <Input type="number" min={0} step="0.01" value={props.theoreticalOutput} onChange={(e) => props.setTheoreticalOutput(Number(e.target.value || 0))} />
+              <Input
+                type="number"
+                min={0}
+                step={r?.outputUnitType === 'EACH' ? '1' : '0.01'}
+                value={props.theoreticalOutput}
+                onChange={(e) => props.setTheoreticalOutput(Number(e.target.value || 0))}
+              />
             </div>
             <div className="space-y-1">
               <Label>Actual output</Label>
-              <Input type="number" min={0} step="0.01" value={props.actualOutput} onChange={(e) => props.setActualOutput(Number(e.target.value || 0))} />
+              <Input
+                type="number"
+                min={0}
+                step={r?.outputUnitType === 'EACH' ? '1' : '0.01'}
+                value={props.actualOutput}
+                onChange={(e) => props.setActualOutput(Number(e.target.value || 0))}
+              />
             </div>
           </div>
 

@@ -68,6 +68,7 @@ function formatCurrencyIntl(amount: number, currency: string, decimals = 2) {
 export function CurrencyProvider(props: { children: React.ReactNode }) {
   const { brand, user } = useAuth();
   const brandId = String((brand as any)?.id ?? (user as any)?.brand_id ?? '');
+  const brandCurrencyCode = (brand as any)?.brand_currency_code as CurrencyCode | undefined;
 
   const receiptSettings = useSyncExternalStore(
     subscribeReceiptSettings,
@@ -82,13 +83,23 @@ export function CurrencyProvider(props: { children: React.ReactNode }) {
     setOverrideCode(null);
   }, [brandId]);
 
+  // Keep receipt settings aligned with the brand currency to prevent symbol flicker
+  // between early (cached) renders and the async brand profile hydrate.
+  useEffect(() => {
+    if (!brandId) return;
+    if (!brandCurrencyCode) return;
+    if (overrideCode) return;
+    const current = (receiptSettings as ReceiptSettings)?.currencyCode ?? 'ZMW';
+    if (current === brandCurrencyCode) return;
+    saveReceiptSettings({ ...(receiptSettings as ReceiptSettings), currencyCode: brandCurrencyCode });
+  }, [brandId, brandCurrencyCode, overrideCode, receiptSettings]);
+
   if (!receiptSettings) {
     throw new Error("CurrencyProvider: receiptSettings is null or undefined.");
   }
 
   const model = useMemo<CurrencyModel>(() => {
     const receiptCurrencyCode = (receiptSettings as ReceiptSettings).currencyCode;
-    const brandCurrencyCode = (brand as any)?.brand_currency_code as CurrencyCode | undefined;
     const currencyCode = (overrideCode ?? brandCurrencyCode ?? receiptCurrencyCode ?? 'ZMW') as CurrencyCode;
     const currencySymbol = currencySymbolFromCode(currencyCode);
 

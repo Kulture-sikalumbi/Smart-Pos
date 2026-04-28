@@ -9,8 +9,8 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuth } from '@/contexts/AuthContext';
 import RequirePermission from '@/components/auth/RequirePermission';
-import type { UserRole } from '@/types/auth';
-import { ROLE_NAMES } from '@/types/auth';
+import type { AssignableStaffRole, UserRole } from '@/types/auth';
+import { ASSIGNABLE_STAFF_ROLES, ROLE_ACCESS_HELPERS, ROLE_NAMES } from '@/types/auth';
 
 export default function Staff() {
   const { allUsers, createUser, updateUser, deleteUser, hasPermission } = useAuth();
@@ -19,7 +19,7 @@ export default function Staff() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editEmail, setEditEmail] = useState('');
-  const [editRole, setEditRole] = useState<UserRole>('waitron');
+  const [editRole, setEditRole] = useState<AssignableStaffRole>('cashier');
   const [editPin, setEditPin] = useState('');
   const [editActive, setEditActive] = useState(true);
   const [formError, setFormError] = useState<string | null>(null);
@@ -36,7 +36,7 @@ export default function Staff() {
     setEditingId('new');
     setEditName('');
     setEditEmail('');
-    setEditRole('waitron');
+    setEditRole('cashier');
     setEditPin('');
     setEditActive(true);
   };
@@ -47,7 +47,7 @@ export default function Staff() {
     setEditingId(id);
     setEditName(u.name);
     setEditEmail(u.email);
-    setEditRole(u.role);
+    setEditRole((ASSIGNABLE_STAFF_ROLES.includes(u.role as AssignableStaffRole) ? u.role : 'cashier') as AssignableStaffRole);
     setEditPin(u.pin ?? '');
     setEditActive(u.isActive);
   };
@@ -136,16 +136,22 @@ export default function Staff() {
             </div>
             <div className="space-y-1">
               <div className="text-sm font-medium">Role</div>
-              <Select value={editRole} onValueChange={(v) => setEditRole(v as UserRole)} disabled={!canManage}>
+              <Select value={editRole} onValueChange={(v) => setEditRole(v as AssignableStaffRole)} disabled={!canManage}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select role" />
                 </SelectTrigger>
                 <SelectContent>
-                  {Object.entries(ROLE_NAMES).map(([role, label]) => (
-                    <SelectItem key={role} value={role}>{label}</SelectItem>
+                  {ASSIGNABLE_STAFF_ROLES.map((role) => (
+                    <SelectItem key={role} value={role}>{ROLE_NAMES[role]}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              <div className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+                <p className="font-medium text-foreground mb-1">Role access preview</p>
+                {ROLE_ACCESS_HELPERS[editRole].map((hint) => (
+                  <p key={hint}>- {hint}</p>
+                ))}
+              </div>
             </div>
             <div className="space-y-1">
               <div className="text-sm font-medium">PIN (POS login)</div>

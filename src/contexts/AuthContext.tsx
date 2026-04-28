@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback, use
 import { supabase } from '@/lib/supabaseClient';
 import type { UserRole, RolePermissions } from '@/types/auth';
 import { ROLE_PERMISSIONS } from '@/types/auth';
+import { isAssignableStaffRole } from '@/types/auth';
 import {
   clearAuthRelatedAppCaches,
   loadAuthSnapshot,
@@ -76,6 +77,7 @@ function isUserRole(role: unknown): role is UserRole {
   return (
     role === 'owner' ||
     role === 'manager' ||
+    role === 'front_supervisor' ||
     role === 'cashier' ||
     role === 'waitron' ||
     role === 'kitchen_staff' ||
@@ -823,11 +825,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const pin = String(newUser.pin ?? '').trim();
       if (!pin) throw new Error('PIN is required');
 
+      const requestedRole = String(newUser.role ?? 'cashier');
+      const safeRole: UserRole = isAssignableStaffRole(requestedRole) ? requestedRole : 'cashier';
+
       const row = {
         brand_id: brand.id,
         name: String(newUser.name ?? '').trim(),
         email: String(newUser.email ?? '').trim(),
-        role: String(newUser.role ?? 'waitron'),
+        role: safeRole,
         pin,
         is_active: newUser.isActive ?? true,
       } as any;
@@ -855,7 +860,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const dbPatch: any = {};
       if (patch.name !== undefined) dbPatch.name = String(patch.name).trim();
       if (patch.email !== undefined) dbPatch.email = String(patch.email).trim();
-      if (patch.role !== undefined) dbPatch.role = String(patch.role);
+      if (patch.role !== undefined) {
+        const requestedRole = String(patch.role ?? '');
+        dbPatch.role = isAssignableStaffRole(requestedRole) ? requestedRole : 'cashier';
+      }
       if (patch.pin !== undefined) dbPatch.pin = String(patch.pin).trim();
       if (patch.isActive !== undefined) dbPatch.is_active = Boolean(patch.isActive);
 

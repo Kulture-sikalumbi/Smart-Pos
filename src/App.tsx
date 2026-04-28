@@ -23,8 +23,10 @@ import StockItems from "./pages/inventory/StockItems";
 import StockIssues from "./pages/inventory/StockIssues";
 import StockTake from "./pages/inventory/StockTake";
 import FrontOfficeStock from "./pages/inventory/FrontOfficeStock";
+import FrontStockTake from "./pages/inventory/FrontStockTake";
 import Recipes from "./pages/manufacturing/Recipes";
 import BatchProduction from "./pages/manufacturing/BatchProduction";
+import { BatchProductionManager } from "./pages/manufacturing/BatchProductionManager";
 import Purchases from "./pages/Purchases";
 import Staff from "./pages/Staff";
 import Reports from "./pages/Reports";
@@ -40,6 +42,9 @@ import ReportSharerDemo from './components/common/ReportSharerDemo';
 import GlobalReceiptDemo from './pages/pos/GlobalReceiptDemo';
 import SelfOrder from './pages/pos/SelfOrder';
 import TableQrCodes from './pages/pos/TableQrCodes';
+import Hub from './pages/Hub';
+import BackOfficeHome from './pages/workspace/BackOfficeHome';
+import FrontOfficeHome from './pages/workspace/FrontOfficeHome';
 import ZRATaxSeason from './pages/ZRATaxSeason';
 import CompanySettings from './pages/CompanySettings';
 import Landing from './pages/Landing';
@@ -186,20 +191,27 @@ const App = () => {
               <Suspense fallback={<AppShellLoader />}>
                 <Routes>
                   <Route path="/" element={<Landing />} />
+                  <Route path="/pos" element={<Navigate to="/app/pos/terminal" replace />} />
                   <Route path="/login" element={<Navigate to="/" replace />} />
                   <Route path="/company-settings" element={<Navigate to="/app/company-settings" replace />} />
                   <Route path="/auth/callback" element={<AuthCallback />} />
 
+                  <Route path="/hub" element={<ProtectedRoute><Hub /></ProtectedRoute>} />
                   <Route path="/app" element={<ProtectedRoute><MainLayout /></ProtectedRoute>}>
-                    <Route index element={<Dashboard />} />
+                    <Route index element={<Navigate to="/hub" replace />} />
+                    <Route path="dashboard" element={<Dashboard />} />
+                    <Route path="back-office" element={<BackOfficeHome />} />
+                    <Route path="front-office" element={<FrontOfficeHome />} />
                     <Route path="inventory/stock-items" element={<StockItems />} />
                     <Route path="inventory/stock-issues" element={<StockIssues />} />
                     <Route path="inventory/stock-take" element={<StockTake />} />
                     <Route path="inventory/front-office-stock" element={<FrontOfficeStock />} />
+                    <Route path="inventory/front-stock-take" element={<FrontStockTake />} />
                     <Route path="inventory/advanced-gaap" element={<AdvancedGAAP />} />
                     <Route path="inventory/transfer-qr" element={<TransferQR />} />
                     <Route path="manufacturing/recipes" element={<Recipes />} />
                     <Route path="manufacturing/production" element={<BatchProduction />} />
+                    <Route path="manufacturing/history" element={<BatchProductionManager />} />
                     <Route path="purchases" element={<Purchases />} />
                     <Route path="staff" element={<Staff />} />
                     <Route path="reports" element={<Reports />} />

@@ -30,7 +30,8 @@ export default function Landing() {
 
   const getDefaultAppRouteForRole = (role: string | undefined) => {
     if (role === 'kitchen_staff') return '/app/pos/kitchen';
-    if (role === 'waitron' || role === 'bar_staff') return '/app/pos/terminal';
+    if (role === 'cashier') return '/app/pos/terminal';
+    if (role === 'front_supervisor' || role === 'manager' || role === 'owner' || role === 'admin') return '/hub';
     return '/app/pos';
   };
 

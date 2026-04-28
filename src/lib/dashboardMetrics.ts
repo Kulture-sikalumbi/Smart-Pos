@@ -2,12 +2,31 @@ import type { Expense, ManagementOverview, SalesMixItem, StockTakeSession, Stock
 import type { Order } from '@/types/pos';
 import type { GRV } from '@/types';
 import { supabase, isSupabaseConfigured } from '@/lib/supabaseClient';
+import { getStockIssuesSnapshot } from '@/lib/stockIssueStore';
+import { getBatchProductionsSnapshot } from '@/lib/batchProductionStore';
+import { getCashUpsSnapshot } from '@/lib/cashUpStore';
 
 export type DashboardStaffRow = {
   id: string;
   name: string;
   role: string;
   totalSales: number;
+};
+
+export type ExecutiveMetrics = {
+  overview: ManagementOverview;
+  topSellers: SalesMixItem[];
+  lowSeller: SalesMixItem | null;
+  staffRows: DashboardStaffRow[];
+  varianceItems: StockVariance[];
+  operational: {
+    stockIssueCount: number;
+    stockIssueValue: number;
+    productionBatchCount: number;
+    averageYieldVariancePercent: number;
+    cashUpCount: number;
+    cashUpVarianceTotal: number;
+  };
 };
 
 export function computeDashboardMetrics(params: {
@@ -167,6 +186,38 @@ export function computeDashboardMetrics(params: {
   return { overview, topSellers, lowSeller, staffRows, varianceItems };
 }
 
+export function computeExecutiveMetrics(params: {
+  startDate: string;
+  endDate: string;
+  orders: Order[];
+  grvs: GRV[];
+  expenses: Expense[];
+  stockTakes: StockTakeSession[];
+}): ExecutiveMetrics {
+  const core = computeDashboardMetrics(params);
+  const stockIssues = getStockIssuesSnapshot().filter((i) => i.date >= params.startDate && i.date <= params.endDate);
+  const batches = getBatchProductionsSnapshot().filter((b) => b.batchDate >= params.startDate && b.batchDate <= params.endDate);
+  const cashUps = getCashUpsSnapshot().filter((c) => c.date >= params.startDate && c.date <= params.endDate);
+
+  const stockIssueValue = round2(sum(stockIssues.map((i) => Number(i.totalValueLost ?? 0))));
+  const avgYieldVariancePct = batches.length
+    ? round2(sum(batches.map((b) => Number(b.yieldVariancePercent ?? 0))) / batches.length)
+    : 0;
+  const cashUpVarianceTotal = round2(sum(cashUps.map((c) => Number(c.shortageOverage ?? 0))));
+
+  return {
+    ...core,
+    operational: {
+      stockIssueCount: stockIssues.length,
+      stockIssueValue,
+      productionBatchCount: batches.length,
+      averageYieldVariancePercent: avgYieldVariancePct,
+      cashUpCount: cashUps.length,
+      cashUpVarianceTotal,
+    },
+  };
+}
+
 // Fetch precomputed aggregates from DB via RPC `get_dashboard_stats` when available.
 export async function fetchDashboardStatsFromDb(brandId: string, startDate: string, endDate: string) {
   if (!isSupabaseConfigured() || !supabase) return null;
@@ -178,38 +229,344 @@ export async function fetchDashboardStatsFromDb(brandId: string, startDate: stri
       return null;
     }
     // Map the RPC result to the UI keys expected by Dashboard
-    const raw = Array.isArray(data) && data.length ? data[0] : data;
+    const raw = (Array.isArray(data) && data.length ? data[0] : data) as Record<string, unknown> | null;
     if (!raw) return null;
+    const rawStaff = Array.isArray(raw.staff_performance) ? (raw.staff_performance as Array<Record<string, unknown>>) : [];
+    const staffRows: DashboardStaffRow[] = rawStaff.length
+      ? rawStaff.map((row, idx: number) => ({
+          id: String(row.staff_id ?? row.id ?? `staff-${idx}`),
+          name: String(row.name ?? row.staff_name ?? 'Staff'),
+          role: String(row.role ?? 'staff'),
+          totalSales: Number(row.totalSales ?? row.total_sales ?? row.sales ?? 0),
+        }))
+      : [];
+
+    const rawTopSelling = Array.isArray(raw.top_selling)
+      ? (raw.top_selling as Array<Record<string, unknown>>)
+      : Array.isArray(raw.top_selling_items)
+        ? (raw.top_selling_items as Array<Record<string, unknown>>)
+        : [];
+    const topSellers: SalesMixItem[] = rawTopSelling.length
+      ? rawTopSelling.map((item, idx: number) => ({
+          itemNo: Number(item.item_no ?? idx + 1),
+          itemName: String(item.name ?? item.item_name ?? 'Item'),
+          quantity: Number(item.qty ?? item.quantity ?? 0),
+          costPerItem: Number(item.cost_per_item ?? 0),
+          sellExcl: Number(item.sell_excl ?? 0),
+          sellIncl: Number(item.sell_incl ?? item.sales ?? 0),
+          gpBeforeDiscount: Number(item.gp_before_discount ?? 0),
+          gpAfterDiscount: Number(item.gp_after_discount ?? 0),
+          totalCost: Number(item.total_cost ?? 0),
+          totalSales: Number(item.sales ?? item.total_sales ?? 0),
+          totalProfit: Number(item.total_profit ?? 0),
+          percentOfTurnover: Number(item.percent_of_turnover ?? 0),
+        }))
+      : [];
+
+    const rawVarianceItems = Array.isArray(raw.varianceItems)
+      ? (raw.varianceItems as Array<Record<string, unknown>>)
+      : Array.isArray(raw.variance_items)
+        ? (raw.variance_items as Array<Record<string, unknown>>)
+        : Array.isArray(raw.variance_alerts)
+          ? (raw.variance_alerts as Array<Record<string, unknown>>)
+          : [];
+    const varianceItems: StockVariance[] = rawVarianceItems.map((item, idx: number) => ({
+      id: String(item.id ?? `variance-${idx}`),
+      itemId: String(item.itemId ?? item.item_id ?? item.id ?? `variance-${idx}`),
+      itemCode: String(item.itemCode ?? item.item_code ?? ''),
+      itemName: String(item.itemName ?? item.item_name ?? 'Unknown item'),
+      departmentId: 'all',
+      unitType: 'EACH',
+      lowestCost: Number(item.lowestCost ?? item.lowest_cost ?? 0),
+      highestCost: Number(item.highestCost ?? item.highest_cost ?? 0),
+      currentCost: Number(item.currentCost ?? item.current_cost ?? 0),
+      systemQty: Number(item.systemQty ?? item.system_qty ?? 0),
+      physicalQty: Number(item.physicalQty ?? item.physical_qty ?? 0),
+      varianceQty: Number(item.varianceQty ?? item.variance_qty ?? 0),
+      varianceValue: Number(item.varianceValue ?? item.variance_value ?? 0),
+      countDate: String(item.countDate ?? item.count_date ?? endDate),
+      timesHadVariance: Number(item.timesHadVariance ?? item.times_had_variance ?? 1),
+    }));
+
+    const turnoverIncl = Number(raw.turnoverIncl ?? raw.turnover_incl ?? raw.total_revenue ?? 0);
+    const expenses = Number(raw.expenses ?? raw.total_expenses ?? 0);
+    const invoiceCount = Number(raw.invoiceCount ?? raw.invoices_count ?? raw.order_count ?? 0);
+    const derivedTurnoverExcl = Number(raw.turnoverExcl ?? raw.turnover_excl ?? turnoverIncl);
+    const derivedCostOfSales = Number(raw.costOfSales ?? raw.cost_of_sales ?? 0);
+    const derivedGrossProfit = Number(raw.grossProfit ?? raw.gross_profit ?? (derivedTurnoverExcl - derivedCostOfSales));
+    const derivedNetProfit = Number(raw.netProfit ?? raw.net_profit ?? (derivedGrossProfit - expenses));
+
+    const supplemental = await fetchOrdersSupplementalFromDb(brandId, startDate, endDate);
+
+    const paymentBreakdown =
+      typeof raw.payment_breakdown === 'object' && raw.payment_breakdown !== null
+        ? raw.payment_breakdown
+        : supplemental.paymentBreakdown;
+
     return {
       ...raw,
+      turnoverIncl,
+      turnoverExcl: derivedTurnoverExcl,
+      costOfSales: derivedCostOfSales,
+      grossProfit: derivedGrossProfit,
+      expenses,
+      netProfit: derivedNetProfit,
       cashierShiftCount: Number(raw.cashier_shift_count ?? 0),
       cashierShiftClosedCount: Number(raw.cashier_shift_closed_count ?? 0),
       cashierShiftOpeningTotal: Number(raw.cashier_shift_opening_total ?? 0),
       cashierShiftClosingTotal: Number(raw.cashier_shift_closing_total ?? 0),
       cashierShiftVarianceTotal: Number(raw.cashier_shift_variance_total ?? 0),
       cashierShiftsByStaff: Array.isArray(raw.cashier_shifts_by_staff) ? raw.cashier_shifts_by_staff : [],
-      staffRows: Array.isArray(raw.staff_performance)
-        ? raw.staff_performance.map((row: any) => ({
-            name: row.name,
-            totalSales: Number(row.totalSales) || 0,
-          }))
-        : [],
-      topSellers: Array.isArray(raw.top_selling)
-        ? raw.top_selling.map((item: any) => ({
-            itemName: item.name,
-            quantity: item.qty,
-            totalSales: item.sales,
-            gpAfterDiscount: 0,
-          }))
-        : [],
-      paymentBreakdown: typeof raw.payment_breakdown === 'object' && raw.payment_breakdown !== null ? raw.payment_breakdown : {},
+      staffRows,
+      topSellers,
+      varianceItems: varianceItems.length ? varianceItems : supplemental.varianceItems,
+      paymentBreakdown,
       hoursPerDay: Array.isArray(raw.hours_per_day) ? raw.hours_per_day : [],
-      invoiceCount: typeof raw.invoices_count === 'number' ? raw.invoices_count : 0,
+      invoiceCount: invoiceCount || supplemental.invoiceCount,
+      customerCount: Number(raw.customerCount ?? raw.customer_count ?? supplemental.customerCountEstimate ?? 0),
+      orderTypes:
+        (raw.orderTypes as unknown) ??
+        (raw.order_types as unknown) ??
+        supplemental.orderTypes,
+      cashTotal: Number(
+        raw.cashTotal ??
+          raw.cash_total ??
+          (paymentBreakdown as Record<string, unknown>)?.cashTotal ??
+          (paymentBreakdown as Record<string, unknown>)?.cash ??
+          supplemental.paymentBreakdown.cash ??
+          0
+      ),
+      cardTotal: Number(
+        raw.cardTotal ??
+          raw.card_total ??
+          (paymentBreakdown as Record<string, unknown>)?.cardTotal ??
+          (paymentBreakdown as Record<string, unknown>)?.card ??
+          supplemental.paymentBreakdown.card ??
+          0
+      ),
+      chequeTotal: Number(
+        raw.chequeTotal ??
+          raw.cheque_total ??
+          (paymentBreakdown as Record<string, unknown>)?.chequeTotal ??
+          (paymentBreakdown as Record<string, unknown>)?.cheque ??
+          supplemental.paymentBreakdown.cheque ??
+          0
+      ),
+      accountTotal: Number(
+        raw.accountTotal ??
+          raw.account_total ??
+          (paymentBreakdown as Record<string, unknown>)?.accountTotal ??
+          (paymentBreakdown as Record<string, unknown>)?.account ??
+          supplemental.paymentBreakdown.account ??
+          0
+      ),
+      nonBankTotal: Number(
+        raw.nonBankTotal ??
+          raw.non_bank_total ??
+          (paymentBreakdown as Record<string, unknown>)?.nonBankTotal ??
+          (paymentBreakdown as Record<string, unknown>)?.non_bank ??
+          supplemental.paymentBreakdown.non_bank ??
+          0
+      ),
+      totalPaytypes: Number(
+        raw.totalPaytypes ??
+          raw.total_paytypes ??
+          (paymentBreakdown as Record<string, unknown>)?.totalPaytypes ??
+          supplemental.totalPaytypes ??
+          0
+      ),
     };
   } catch (e) {
     console.warn('[dashboardMetrics] fetchDashboardStatsFromDb exception', e);
     return null;
   }
+}
+
+async function fetchOrdersSupplementalFromDb(brandId: string, startDate: string, endDate: string) {
+  const empty = {
+    paymentBreakdown: { cash: 0, card: 0, cheque: 0, account: 0, non_bank: 0 },
+    totalPaytypes: 0,
+    invoiceCount: 0,
+    customerCountEstimate: 0,
+    orderTypes: {
+      eatIn: { value: 0, percent: 0 },
+      takeOut: { value: 0, percent: 0 },
+      delivery: { value: 0, percent: 0 },
+    },
+    varianceItems: [] as StockVariance[],
+  };
+  if (!isSupabaseConfigured() || !supabase || !brandId) return empty;
+
+  const fromTs = `${startDate}T00:00:00`;
+  const toTs = `${endDate}T23:59:59`;
+  let { data, error } = await supabase
+    .from('pos_orders')
+    .select('total, payment_method, order_type, customer_phone, customer_name')
+    .eq('brand_id', brandId)
+    .eq('status', 'paid')
+    .gte('paid_at', fromTs)
+    .lte('paid_at', toTs)
+    .limit(20000);
+
+  if (error) {
+    const retry = await supabase
+      .from('pos_orders')
+      .select('total, payment_method, order_type')
+      .eq('brand_id', brandId)
+      .eq('status', 'paid')
+      .gte('paid_at', fromTs)
+      .lte('paid_at', toTs)
+      .limit(20000);
+    data = retry.data;
+    error = retry.error;
+  }
+
+  if (error || !Array.isArray(data)) return empty;
+
+  let cash = 0;
+  let card = 0;
+  let cheque = 0;
+  let account = 0;
+  let nonBank = 0;
+  let eatIn = 0;
+  let takeOut = 0;
+  let delivery = 0;
+  const customerKeys = new Set<string>();
+
+  for (const row of data as Array<Record<string, unknown>>) {
+    const total = Number(row.total ?? 0);
+    const paymentMethod = String(row.payment_method ?? '').toLowerCase();
+    if (paymentMethod === 'cash') cash += total;
+    else if (paymentMethod === 'card') card += total;
+    else if (paymentMethod === 'cheque') cheque += total;
+    else if (paymentMethod === 'account') account += total;
+    else if (paymentMethod === 'non_bank') nonBank += total;
+
+    const orderType = String(row.order_type ?? '').toLowerCase();
+    if (orderType === 'eat_in') eatIn += total;
+    else if (orderType === 'take_out') takeOut += total;
+    else if (orderType === 'delivery') delivery += total;
+
+    const phone = String(row.customer_phone ?? '').trim();
+    const name = String(row.customer_name ?? '').trim().toLowerCase();
+    if (phone) customerKeys.add(`p:${phone}`);
+    else if (name) customerKeys.add(`n:${name}`);
+  }
+
+  const totalPaytypes = round2(cash + card + cheque + account + nonBank);
+  const orderTypeDenom = totalPaytypes > 0 ? totalPaytypes : 1;
+  return {
+    paymentBreakdown: {
+      cash: round2(cash),
+      card: round2(card),
+      cheque: round2(cheque),
+      account: round2(account),
+      non_bank: round2(nonBank),
+    },
+    totalPaytypes,
+    invoiceCount: data.length,
+    // If customer columns are not populated, this naturally falls back later to invoice count.
+    customerCountEstimate: customerKeys.size > 0 ? customerKeys.size : data.length,
+    orderTypes: {
+      eatIn: { value: round2(eatIn), percent: round2((eatIn / orderTypeDenom) * 100) },
+      takeOut: { value: round2(takeOut), percent: round2((takeOut / orderTypeDenom) * 100) },
+      delivery: { value: round2(delivery), percent: round2((delivery / orderTypeDenom) * 100) },
+    },
+    varianceItems: [],
+  };
+}
+
+export function mergeDashboardOverview(localOverview: ManagementOverview, dbSnapshot: Record<string, unknown> | null): ManagementOverview {
+  if (!dbSnapshot) return localOverview;
+  const normalizedPayment =
+    dbSnapshot.paymentBreakdown && typeof dbSnapshot.paymentBreakdown === 'object' ? dbSnapshot.paymentBreakdown : null;
+  const hoursPerDay =
+    Array.isArray(dbSnapshot.hoursPerDay) && dbSnapshot.hoursPerDay.length > 0
+      ? Number(((dbSnapshot.hoursPerDay as Array<Record<string, unknown>>).reduce((sum: number, h) => sum + Number(h.total || 0), 0) / (dbSnapshot.hoursPerDay as Array<unknown>).length).toFixed(1))
+      : Number(localOverview.hoursPerDay ?? 0);
+  const metricNumber = (dbValue: unknown, localValue: number) => {
+    const local = Number.isFinite(localValue) ? localValue : 0;
+    const parsed = typeof dbValue === 'number' ? dbValue : typeof dbValue === 'string' ? Number(dbValue) : NaN;
+    if (!Number.isFinite(parsed)) return local;
+    // Prefer live local metrics when they exist (responsive cards),
+    // but allow DB to fill gaps when local cache is empty after a reset.
+    if (local !== 0) return local;
+    return parsed;
+  };
+  const normalizedOrderTypes = normalizeOrderTypes(
+    (dbSnapshot.orderTypes ?? dbSnapshot.order_types) as unknown,
+    Number(localOverview.turnoverIncl ?? 0) || Number(dbSnapshot.turnoverIncl ?? dbSnapshot.turnover_incl ?? 0)
+  );
+  return {
+    ...localOverview,
+    turnoverIncl: metricNumber(dbSnapshot.turnoverIncl ?? dbSnapshot.turnover_incl, localOverview.turnoverIncl ?? 0),
+    turnoverExcl: metricNumber(dbSnapshot.turnoverExcl ?? dbSnapshot.turnover_excl, localOverview.turnoverExcl ?? 0),
+    tax: metricNumber(dbSnapshot.tax, localOverview.tax ?? 0),
+    costOfSales: metricNumber(dbSnapshot.costOfSales ?? dbSnapshot.cost_of_sales, localOverview.costOfSales ?? 0),
+    costOfSalesPercent: metricNumber(dbSnapshot.costOfSalesPercent ?? dbSnapshot.cost_of_sales_percent, localOverview.costOfSalesPercent ?? 0),
+    grossProfit: metricNumber(dbSnapshot.grossProfit ?? dbSnapshot.gross_profit, localOverview.grossProfit ?? 0),
+    grossProfitPercent: metricNumber(dbSnapshot.grossProfitPercent ?? dbSnapshot.gross_profit_percent, localOverview.grossProfitPercent ?? 0),
+    expenses: metricNumber(dbSnapshot.expenses, localOverview.expenses ?? 0),
+    netProfit: metricNumber(dbSnapshot.netProfit ?? dbSnapshot.net_profit, localOverview.netProfit ?? 0),
+    invoiceCount: metricNumber(dbSnapshot.invoiceCount ?? dbSnapshot.invoices_count, localOverview.invoiceCount ?? 0),
+    customerCount: metricNumber(dbSnapshot.customerCount ?? dbSnapshot.customer_count, localOverview.customerCount ?? 0),
+    tableCount: metricNumber(dbSnapshot.tableCount ?? dbSnapshot.table_count, localOverview.tableCount ?? 0),
+    avgPerInvoice: metricNumber(dbSnapshot.avgPerInvoice ?? dbSnapshot.avg_per_invoice, localOverview.avgPerInvoice ?? 0),
+    tablesPerHour: metricNumber(dbSnapshot.tablesPerHour ?? dbSnapshot.tables_per_hour, localOverview.tablesPerHour ?? 0),
+    minsPerTable: metricNumber(dbSnapshot.minsPerTable ?? dbSnapshot.mins_per_table, localOverview.minsPerTable ?? 0),
+    hoursPerDay,
+    stockVarianceValue: metricNumber(dbSnapshot.stockVarianceValue ?? dbSnapshot.stock_variance_value, localOverview.stockVarianceValue ?? 0),
+    wastageValue: metricNumber(dbSnapshot.wastageValue ?? dbSnapshot.wastage_value, localOverview.wastageValue ?? 0),
+    cashTotal: metricNumber(dbSnapshot.cashTotal ?? dbSnapshot.cash_total ?? normalizedPayment?.cash, localOverview.cashTotal ?? 0),
+    chequeTotal: metricNumber(dbSnapshot.chequeTotal ?? dbSnapshot.cheque_total ?? normalizedPayment?.cheque, localOverview.chequeTotal ?? 0),
+    cardTotal: metricNumber(dbSnapshot.cardTotal ?? dbSnapshot.card_total ?? normalizedPayment?.card, localOverview.cardTotal ?? 0),
+    accountTotal: metricNumber(dbSnapshot.accountTotal ?? dbSnapshot.account_total ?? normalizedPayment?.account, localOverview.accountTotal ?? 0),
+    nonBankTotal: metricNumber(dbSnapshot.nonBankTotal ?? dbSnapshot.non_bank_total ?? normalizedPayment?.non_bank, localOverview.nonBankTotal ?? 0),
+    totalPaytypes: metricNumber(dbSnapshot.totalPaytypes ?? dbSnapshot.total_paytypes, localOverview.totalPaytypes ?? 0),
+    sessions: dbSnapshot.sessions ?? dbSnapshot.session_breakdown ?? localOverview.sessions,
+    orderTypes: normalizedOrderTypes ?? localOverview.orderTypes,
+  };
+}
+
+export function computeDelta(current: number, previous: number) {
+  const deltaValue = round2(current - previous);
+  const deltaPercent = previous !== 0 ? round2((deltaValue / previous) * 100) : current === 0 ? 0 : 100;
+  return { deltaValue, deltaPercent };
+}
+
+function normalizeOrderTypes(value: unknown, turnoverIncl: number): ManagementOverview['orderTypes'] | null {
+  const fallback: ManagementOverview['orderTypes'] = {
+    eatIn: { value: 0, percent: 0 },
+    takeOut: { value: 0, percent: 0 },
+    delivery: { value: 0, percent: 0 },
+  };
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+
+  // Already in expected shape
+  if (v.eatIn && typeof v.eatIn === 'object') {
+    const eatIn = v.eatIn as Record<string, unknown>;
+    const takeOut = (v.takeOut as Record<string, unknown>) ?? {};
+    const delivery = (v.delivery as Record<string, unknown>) ?? {};
+    return {
+      eatIn: { value: Number(eatIn.value ?? 0), percent: Number(eatIn.percent ?? 0) },
+      takeOut: { value: Number(takeOut.value ?? 0), percent: Number(takeOut.percent ?? 0) },
+      delivery: { value: Number(delivery.value ?? 0), percent: Number(delivery.percent ?? 0) },
+    };
+  }
+
+  // RPC `order_types` often returns numeric totals in snake_case
+  const eat = Number(v.eat_in ?? v.eatIn ?? 0);
+  const take = Number(v.take_out ?? v.takeOut ?? 0);
+  const del = Number(v.delivery ?? 0);
+  const denom = turnoverIncl > 0 ? turnoverIncl : eat + take + del > 0 ? eat + take + del : 1;
+
+  return {
+    ...fallback,
+    eatIn: { value: round2(eat), percent: round2((eat / denom) * 100) },
+    takeOut: { value: round2(take), percent: round2((take / denom) * 100) },
+    delivery: { value: round2(del), percent: round2((del / denom) * 100) },
+  };
 }
 
 function dateKeyFromIso(value: unknown) {
@@ -221,7 +578,7 @@ function dateKeyFromIso(value: unknown) {
       return `${y}-${m}-${d}`;
     }
   }
-  return dateKeyLocal(new Date(value as any));
+  return dateKeyLocal(new Date(value as string | number | Date));
 }
 
 function isDigits(s: string) {
@@ -252,14 +609,14 @@ function computePaymentTotals(orders: Order[]) {
     const splits = o.splitPayments?.filter((s) => Number.isFinite(s.amount) && s.amount > 0) ?? [];
     if (splits.length) {
       for (const s of splits) {
-        if (s.method in totals) (totals as any)[s.method] += s.amount;
+        if (s.method in totals) totals[s.method as keyof typeof totals] += s.amount;
       }
       continue;
     }
 
     const method = (o.paymentMethod ?? 'cash') as keyof typeof totals;
     const amt = Number.isFinite(o.total) ? o.total : 0;
-    if (method in totals) (totals as any)[method] += amt;
+    if (method in totals) totals[method] += amt;
   }
 
   return {
@@ -415,7 +772,7 @@ function computeStockVarianceFromTakes(stockTakes: StockTakeSession[], startDate
 function computeAvgOpenHoursPerDay(orders: Order[], startDate: string, endDate: string) {
   const byDay = new Map<string, { min: number; max: number }>();
   for (const o of orders) {
-    const iso = (o.paidAt ?? o.createdAt) as any;
+    const iso = (o.paidAt ?? o.createdAt) as string;
     const key = dateKeyFromIso(iso);
     if (key < startDate || key > endDate) continue;
     const t = Date.parse(String(iso));

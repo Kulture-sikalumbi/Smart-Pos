@@ -1,9 +1,10 @@
-import { Outlet, useLocation } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import React, { Suspense } from 'react';
 import { AppSidebar } from './AppSidebar';
 import { SidebarProvider, SidebarTrigger, SidebarInset } from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
 import { ChevronDown } from 'lucide-react';
+import { Boxes, ChefHat, ClipboardList, Grid3X3, MonitorSmartphone, UtensilsCrossed } from 'lucide-react';
 import LowStockAlerts from '@/components/common/LowStockAlerts';
 import SyncStatusIndicator from '@/components/layout/SyncStatusIndicator';
 import { Badge } from '@/components/ui/badge';
@@ -23,7 +24,8 @@ import { CurrencyPicker } from '@/components/common/CurrencyPicker';
 
 export function MainLayout() {
   const location = useLocation();
-    const { user, logout, switchUser, operatorUsers } = useAuth();
+  const navigate = useNavigate();
+  const { user, logout, switchUser, operatorUsers, hasPermission } = useAuth();
   const { settings } = useBranding();
 
   useOfflineOrderSync();
@@ -33,8 +35,50 @@ export function MainLayout() {
   const isKitchenDisplay = location.pathname === '/app/pos/kitchen';
 
   if (isPosTerminal || isSelfOrder || isKitchenDisplay) {
+    const role = String(user?.role ?? '').toLowerCase();
+    const canUseTables = hasPermission('transferTables');
+    const canUseKitchen = role === 'owner' || role === 'manager' || role === 'front_supervisor' || role === 'kitchen_staff';
+    const canUseBatchProduction = hasPermission('recordBatchProduction');
+    const canUsePos = hasPermission('accessPOS');
+
     return (
       <div className="min-h-screen w-full bg-background relative">
+        {!isSelfOrder && (
+          <div className="absolute top-3 left-3 z-50 flex items-center gap-2 rounded-xl border border-white/15 bg-background/85 p-2 backdrop-blur-xl shadow-lg">
+            <Button size="sm" variant="outline" onClick={() => navigate('/hub')}>
+              <ChefHat className="h-4 w-4 mr-1" />
+              Hub
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => navigate('/app/front-office')}>
+              <ClipboardList className="h-4 w-4 mr-1" />
+              Front Office
+            </Button>
+            {canUseBatchProduction && (
+              <Button size="sm" variant="outline" onClick={() => navigate('/app/manufacturing/production')}>
+                <Boxes className="h-4 w-4 mr-1" />
+                Batch
+              </Button>
+            )}
+            {canUsePos && (
+              <Button size="sm" variant="outline" onClick={() => navigate('/app/pos/terminal')}>
+                <MonitorSmartphone className="h-4 w-4 mr-1" />
+                POS
+              </Button>
+            )}
+            {canUseKitchen && (
+              <Button size="sm" variant="outline" onClick={() => navigate('/app/pos/kitchen')}>
+                <UtensilsCrossed className="h-4 w-4 mr-1" />
+                Kitchen
+              </Button>
+            )}
+            {canUseTables && (
+              <Button size="sm" variant="outline" onClick={() => navigate('/app/pos/tables')}>
+                <Grid3X3 className="h-4 w-4 mr-1" />
+                Tables
+              </Button>
+            )}
+          </div>
+        )}
         <div className="absolute top-3 right-3 z-50">
           <SyncStatusIndicator />
         </div>

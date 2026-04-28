@@ -1,206 +1,161 @@
-import { useSyncExternalStore, useState } from 'react';
-import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogAction, AlertDialogCancel } from '@/components/ui/alert-dialog';
-import { NavLink, useLocation, useNavigate } from 'react-router-dom';
+import React, { useMemo, useState } from 'react';
 import {
-  LayoutDashboard,
-  Package,
-  ArrowRightLeft,
-  ClipboardCheck,
-  ChefHat,
-  Boxes,
-  ShoppingCart,
-  Users,
-  BarChart3,
-  Settings,
-  Factory,
-  MonitorSmartphone,
-  Grid3X3,
-  Calculator,
-  UtensilsCrossed,
-  Receipt,
-  QrCode,
-  Wand2,
-} from 'lucide-react';
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Button } from '@/components/ui/button';
 import {
   Sidebar,
   SidebarContent,
-  SidebarGroup,
-  SidebarGroupLabel,
-  SidebarGroupContent,
-  SidebarMenu,
-  SidebarMenuItem,
-  SidebarMenuButton,
-  SidebarHeader,
   SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
   useSidebar,
 } from '@/components/ui/sidebar';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { cn } from '@/lib/utils';
 import { useAuth } from '@/contexts/AuthContext';
 import { useBranding } from '@/contexts/BrandingContext';
-import { getFeatureFlagsSnapshot, subscribeFeatureFlags } from '@/lib/featureFlagsStore';
+import { useWorkspace } from '@/contexts/WorkspaceContext';
+import { cn } from '@/lib/utils';
+import { NavLink } from '@/components/NavLink';
+import {
+  ArrowRightLeft,
+  BarChart3,
+  Boxes,
+  ChefHat,
+  ClipboardCheck,
+  Factory,
+  Grid3X3,
+  LayoutDashboard,
+  MonitorSmartphone,
+  Package,
+  Receipt,
+  Settings,
+  ShoppingCart,
+  Users,
+  UtensilsCrossed,
+} from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import type { UserRole } from '@/types/auth';
 
-const navigationItems = [
-  { title: 'Dashboard', url: '/app', icon: LayoutDashboard, permission: 'viewDashboard' as const },
+type NavItemType = {
+  title: string;
+  url: string;
+  icon: React.ComponentType<{ className?: string }>;
+  permission: keyof import('@/types/auth').RolePermissions;
+  roles?: UserRole[];
+};
+
+const backOfficeItems: NavItemType[] = [
+  { title: 'Workspace Home', url: '/app/back-office', icon: LayoutDashboard, permission: 'viewDashboard' },
+  { title: 'Dashboard', url: '/app/dashboard', icon: LayoutDashboard, permission: 'viewDashboard' },
+  { title: 'Stock Items', url: '/app/inventory/items', icon: Package, permission: 'viewInventory' },
+  { title: 'Purchases (GRV)', url: '/app/purchases', icon: ShoppingCart, permission: 'viewPurchases' },
+  { title: 'Stock Issues', url: '/app/inventory/stock-issues', icon: ArrowRightLeft, permission: 'createStockIssues' },
+  { title: 'Stock Take', url: '/app/inventory/stock-take', icon: ClipboardCheck, permission: 'performStockTake' },
+  { title: 'Staff', url: '/app/staff', icon: Users, permission: 'viewStaff' },
+  { title: 'Reports', url: '/app/reports', icon: BarChart3, permission: 'viewReports' },
 ];
 
-const posItems = [
-  { title: 'POS Terminal', url: '/app/pos/terminal', icon: MonitorSmartphone, permission: 'accessPOS' as const },
-  { title: 'POS Menu', url: '/app/pos/menu', icon: Receipt, permission: 'manageSettings' as const },
-  { title: 'Table QR Codes', url: '/app/pos/table-qr', icon: QrCode, permission: 'accessPOS' as const },
-  { title: 'Tables', url: '/app/pos/tables', icon: Grid3X3, permission: 'accessPOS' as const },
-  { title: 'Kitchen Display', url: '/app/pos/kitchen', icon: UtensilsCrossed, permission: 'accessPOS' as const },
+const frontOfficeItems: NavItemType[] = [
+  { title: 'Workspace Home', url: '/app/front-office', icon: ChefHat, permission: 'accessPOS' },
+  { title: 'POS Terminal', url: '/app/pos/terminal', icon: MonitorSmartphone, permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
+  { title: 'Front Office Stock', url: '/app/inventory/front-office-stock', icon: Package, permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor', 'kitchen_staff'] },
+  { title: 'Stock Transfers', url: '/app/inventory/front-office-stock', icon: ArrowRightLeft, permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor'] },
+  { title: 'Front Stock Take', url: '/app/inventory/front-stock-take', icon: ClipboardCheck, permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor'] },
+  { title: 'Batch Production', url: '/app/manufacturing/production', icon: Boxes, permission: 'recordBatchProduction' },
+  { title: 'Batch History', url: '/app/manufacturing/history', icon: BarChart3, permission: 'recordBatchProduction', roles: ['owner', 'manager', 'front_supervisor'] },
+  { title: 'Kitchen Display', url: '/app/pos/kitchen', icon: UtensilsCrossed, permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'kitchen_staff'] },
+  { title: 'Tables', url: '/app/pos/tables', icon: Grid3X3, permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
+  { title: 'Stock Issues (Bridge)', url: '/app/inventory/stock-issues', icon: ArrowRightLeft, permission: 'createStockIssues', roles: ['owner', 'manager', 'front_supervisor'] },
+  { title: 'Daily Receipts', url: '/app/receipt-demo', icon: Receipt, permission: 'viewReports', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
 ];
-
-const inventoryItems = [
-  { title: 'Stock Items', url: '/app/inventory/items', icon: Package, permission: 'viewInventory' as const },
-  { title: 'Front Office Stock', url: '/app/inventory/front-office-stock', icon: Package, permission: 'viewInventory' as const },
-  { title: 'Stock Issues', url: '/app/inventory/stock-issues', icon: ArrowRightLeft, permission: 'createStockIssues' as const },
-  { title: 'Stock Take', url: '/app/inventory/stock-take', icon: ClipboardCheck, permission: 'performStockTake' as const },
-  { title: 'Mthunzi-Smart', url: '/app/inventory/advanced-gaap', icon: Calculator, permission: 'viewInventory' as const },
-  { title: 'Transfers (QR)', url: '/app/inventory/transfer-qr', icon: QrCode, permission: 'viewInventory' as const },
-];
-
-const manufacturingItems = [
-  { title: 'Recipes', url: '/app/manufacturing/recipes', icon: ChefHat, permission: 'viewRecipes' as const },
-  { title: 'Batch Production', url: '/app/manufacturing/production', icon: Boxes, permission: 'recordBatchProduction' as const },
-];
-
-const operationsItems = [
-  { title: 'Purchases (GRV)', url: '/app/purchases', icon: ShoppingCart, permission: 'viewPurchases' as const },
-  { title: 'Staff', url: '/app/staff', icon: Users, permission: 'viewStaff' as const },
-];
-
-const reportItems = [
-  { title: 'All Reports', url: '/app/reports', icon: BarChart3, permission: 'viewReports' as const },
-];
-
-const intelligenceItems = [
-  // Owner-only for now (owner is the only role with `manageSettings`).
-  { title: 'Intelligence', url: '/app/intelligence', icon: Wand2, permission: 'manageSettings' as const },
-];
-
-const toolsItems = [
-  { title: 'Tax Engine', url: '/app/tax-demo', icon: Calculator, permission: 'viewReports' as const },
-  { title: 'Audit Dashboard', url: '/app/audit-dashboard', icon: BarChart3, permission: 'viewReports' as const },
-  { title: 'Security', url: '/app/security-demo', icon: MonitorSmartphone, permission: 'viewReports' as const },
-  { title: 'Variance', url: '/app/variance-demo', icon: BarChart3, permission: 'viewReports' as const },
-  { title: 'ZRA Invoice', url: '/app/zra-invoice-demo', icon: Receipt, permission: 'viewReports' as const },
-  { title: 'Report Share', url: '/app/report-share-demo', icon: BarChart3, permission: 'viewReports' as const },
-  { title: 'Receipts', url: '/app/receipt-demo', icon: Receipt, permission: 'viewReports' as const },
-];
-
-const disabledFeatureRoutes = new Set([
-  '/app/pos/table-qr',
-  '/app/pos/tables',
-  '/app/inventory/advanced-gaap',
-  '/app/inventory/transfer-qr',
-  '/app/tax-demo',
-  '/app/security-demo',
-  '/app/variance-demo',
-  '/app/zra-invoice-demo',
-  '/app/report-share-demo',
-  '/app/receipt-demo',
-  '/app/audit-dashboard',
-]);
-
-const disabledFeatureMessage = 'Feature coming soon';
 
 export function AppSidebar() {
   const location = useLocation();
-  const { state } = useSidebar();
-  const { hasPermission } = useAuth();
-  const { user, brand } = useAuth();
-  const { settings, brandExists: companySettingsExists } = useBranding();
   const navigate = useNavigate();
-  const [showCreateBrandDialog, setShowCreateBrandDialog] = useState(false);
-  const [requestedNav, setRequestedNav] = useState<string | null>(null);
-  const flags = useSyncExternalStore(subscribeFeatureFlags, getFeatureFlagsSnapshot, getFeatureFlagsSnapshot);
-  const intelligenceEnabled = Boolean(flags.flags.intelligenceWorkspace);
+  const { state } = useSidebar();
   const collapsed = state === 'collapsed';
+  const { hasPermission, user, brand } = useAuth();
+  const { settings } = useBranding();
+  const { workspace, setWorkspace, canUseBackOffice, canUseFrontOffice } = useWorkspace();
+  const [showCreateBrandDialog, setShowCreateBrandDialog] = useState(false);
 
-  // Sidebar access should be gated by whether the authenticated user is linked to a brand,
-  // NOT whether company settings exist on the server.
   const authBrandId = String((user as any)?.brand_id ?? (brand as any)?.id ?? '');
   const hasBrand = Boolean(authBrandId);
+  const role = String((user as any)?.role ?? '').toLowerCase();
+  const isSuperAdmin = Boolean((user as any)?.is_super_admin);
+  const canSwitchMode = isSuperAdmin || role === 'owner' || role === 'admin';
 
   const isActive = (path: string) => {
     if (path === '/app') return location.pathname === '/app' || location.pathname === '/app/';
     return location.pathname.startsWith(path);
   };
 
-  type NavItemType = { title: string; url: string; icon: React.ComponentType<{ className?: string }>; permission: keyof import('@/types/auth').RolePermissions };
+  const activeRole = (user?.role ?? 'cashier') as UserRole;
+  const visibleItems = useMemo(() => {
+    const source = workspace === 'back' ? backOfficeItems : frontOfficeItems;
+    return source.filter((item) => hasPermission(item.permission) && (!item.roles || item.roles.includes(activeRole)));
+  }, [workspace, hasPermission, activeRole]);
 
   const NavItem = ({ item }: { item: NavItemType }) => {
-    if (!hasPermission(item.permission)) return null;
-    const brandLocked = !hasBrand;
-    const featureDisabled = disabledFeatureRoutes.has(item.url);
-    const disabled = brandLocked || featureDisabled;
-
-    const link = (
-      <SidebarMenuButton asChild isActive={isActive(item.url) && !disabled}>
-        <NavLink
-          to={disabled ? '#' : item.url}
-          aria-disabled={disabled}
-          tabIndex={disabled ? -1 : undefined}
-          onClick={(e) => {
-            if (disabled) {
-              e.preventDefault();
-              if (brandLocked) {
-                setRequestedNav(item.url);
-                setShowCreateBrandDialog(true);
-              }
-            }
-          }}
-          className={cn(
-            "flex items-center gap-3 px-3 py-2 rounded-md transition-colors",
-            isActive(item.url) && !disabled
-              ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-              : "text-sidebar-foreground hover:bg-sidebar-accent/50",
-            disabled && 'cursor-not-allowed opacity-50'
-          )}
-        >
-          <item.icon className="h-4 w-4 shrink-0" />
-          {!collapsed && <span>{item.title}</span>}
-        </NavLink>
-      </SidebarMenuButton>
-    );
-    
+    const disabled = !hasBrand;
     return (
       <SidebarMenuItem>
-        {featureDisabled ? (
-          <Tooltip>
-            <TooltipTrigger asChild>{link}</TooltipTrigger>
-            <TooltipContent side="right" align="center">
-              {disabledFeatureMessage}
-            </TooltipContent>
-          </Tooltip>
-        ) : (
-          link
-        )}
+        <SidebarMenuButton asChild isActive={isActive(item.url) && !disabled}>
+          <NavLink
+            to={disabled ? '#' : item.url}
+            aria-disabled={disabled}
+            tabIndex={disabled ? -1 : undefined}
+            onClick={(e) => {
+              if (disabled) {
+                e.preventDefault();
+                setShowCreateBrandDialog(true);
+                return;
+              }
+              if (item.url.startsWith('/app/pos') || item.url.startsWith('/app/manufacturing') || item.url.startsWith('/app/inventory/front-office-stock')) {
+                setWorkspace('front');
+              }
+              if (item.url.startsWith('/app/dashboard') || item.url.startsWith('/app/purchases') || item.url.startsWith('/app/staff') || item.url.startsWith('/app/reports') || item.url.startsWith('/app/inventory/stock')) {
+                setWorkspace('back');
+              }
+            }}
+            className={cn(
+              'flex items-center gap-3 px-3 py-2 rounded-md transition-colors',
+              isActive(item.url) && !disabled
+                ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
+                : 'text-sidebar-foreground hover:bg-sidebar-accent/50',
+              disabled && 'cursor-not-allowed opacity-50'
+            )}
+          >
+            <item.icon className="h-4 w-4 shrink-0" />
+            {!collapsed && <span>{item.title}</span>}
+          </NavLink>
+        </SidebarMenuButton>
       </SidebarMenuItem>
     );
   };
 
-  const handleCreateBrandNow = () => {
-    setShowCreateBrandDialog(false);
-    navigate('/app/company-settings');
-  };
-
-  const hasAnyPermission = (items: NavItemType[]) => {
-    return items.some(item => hasPermission(item.permission));
-  };
+  const workspaceAccentClass =
+    workspace === 'back'
+      ? 'border-r-2 border-r-blue-500/60 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.15)]'
+      : 'border-r-2 border-r-emerald-400/70 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.18)]';
 
   return (
-    <Sidebar className="border-r border-sidebar-border">
+    <Sidebar className={cn('border-r border-sidebar-border', workspaceAccentClass)}>
       <SidebarHeader className="p-4 border-b border-sidebar-border">
         <div className="flex items-center gap-3">
           {settings.logoDataUrl ? (
-            <img
-              src={settings.logoDataUrl}
-              alt={settings.appName}
-              className="h-8 w-8 rounded-lg object-cover border border-sidebar-border bg-sidebar-primary"
-            />
+            <img src={settings.logoDataUrl} alt={settings.appName} className="h-8 w-8 rounded-lg object-cover border border-sidebar-border bg-sidebar-primary" />
           ) : (
             <div className="h-8 w-8 rounded-lg bg-sidebar-primary flex items-center justify-center">
               <Factory className="h-5 w-5 text-sidebar-primary-foreground" />
@@ -209,142 +164,64 @@ export function AppSidebar() {
           {!collapsed && (
             <div>
               <h2 className="font-bold text-sidebar-foreground">{settings.appName}</h2>
-              <p className="text-xs text-sidebar-foreground/60">{settings.tagline ?? 'Back Office + POS'}</p>
+              <p className="text-xs text-sidebar-foreground/60">{workspace === 'back' ? 'Back Office Mode' : 'Front Office Mode'}</p>
             </div>
           )}
         </div>
+
+        {!collapsed && (
+          <div className="mt-3 flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={workspace === 'back' ? 'default' : 'outline'}
+              disabled={!canUseBackOffice || !canSwitchMode}
+              onClick={() => {
+                setWorkspace('back');
+                navigate('/app/back-office');
+              }}
+            >
+              Back Office
+            </Button>
+            <Button
+              size="sm"
+              variant={workspace === 'front' ? 'default' : 'outline'}
+              disabled={!canUseFrontOffice}
+              onClick={() => {
+                setWorkspace('front');
+                navigate('/app/front-office');
+              }}
+            >
+              Front Office
+            </Button>
+          </div>
+        )}
       </SidebarHeader>
-      
+
       <SidebarContent className="py-4">
-        {/* Main */}
         <SidebarGroup>
+          {!collapsed && <SidebarGroupLabel className="text-sidebar-foreground/50 px-3">{workspace === 'back' ? 'Back Office' : 'Front Office'}</SidebarGroupLabel>}
           <SidebarGroupContent>
             <SidebarMenu>
-              {navigationItems.map((item) => (
+              {visibleItems.map((item) => (
                 <NavItem key={item.url} item={item} />
               ))}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-
-        {/* POS */}
-        {hasAnyPermission(posItems) && (
-          <SidebarGroup>
-            {!collapsed && <SidebarGroupLabel className="text-sidebar-foreground/50 px-3">Point of Sale</SidebarGroupLabel>}
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {posItems.map((item) => (
-                  <NavItem key={item.url} item={item} />
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-
-        {/* Inventory */}
-        {hasAnyPermission(inventoryItems) && (
-          <SidebarGroup>
-            {!collapsed && <SidebarGroupLabel className="text-sidebar-foreground/50 px-3">Inventory</SidebarGroupLabel>}
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {inventoryItems.map((item) => (
-                  <NavItem key={item.url} item={item} />
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-
-        {/* Manufacturing */}
-        {hasAnyPermission(manufacturingItems) && (
-          <SidebarGroup>
-            {!collapsed && <SidebarGroupLabel className="text-sidebar-foreground/50 px-3">Manufacturing</SidebarGroupLabel>}
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {manufacturingItems.map((item) => (
-                  <NavItem key={item.url} item={item} />
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-
-        {/* Operations */}
-        {hasAnyPermission(operationsItems) && (
-          <SidebarGroup>
-            {!collapsed && <SidebarGroupLabel className="text-sidebar-foreground/50 px-3">Operations</SidebarGroupLabel>}
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {operationsItems.map((item) => (
-                  <NavItem key={item.url} item={item} />
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-
-        {/* Reports */}
-        {hasAnyPermission(reportItems) && (
-          <SidebarGroup>
-            {!collapsed && <SidebarGroupLabel className="text-sidebar-foreground/50 px-3">Reports</SidebarGroupLabel>}
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {reportItems.map((item) => (
-                  <NavItem key={item.url} item={item} />
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-
-        {/* Intelligence */}
-        {intelligenceEnabled && hasAnyPermission(intelligenceItems) && (
-          <SidebarGroup>
-            {!collapsed && <SidebarGroupLabel className="text-sidebar-foreground/50 px-3">Intelligence</SidebarGroupLabel>}
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {intelligenceItems.map((item) => (
-                  <NavItem key={item.url} item={item} />
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
-
-        {/* Tools */}
-        {hasAnyPermission(toolsItems) && (
-          <SidebarGroup>
-            {!collapsed && <SidebarGroupLabel className="text-sidebar-foreground/50 px-3">Tools</SidebarGroupLabel>}
-            <SidebarGroupContent>
-              <SidebarMenu>
-                {toolsItems.map((item) => (
-                  <NavItem key={item.url} item={item} />
-                ))}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
       </SidebarContent>
-
-      <AlertDialog open={showCreateBrandDialog} onOpenChange={(o) => setShowCreateBrandDialog(o)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Create a brand first</AlertDialogTitle>
-            <AlertDialogDescription>
-              You need to create a brand before accessing the app. Create your brand now to continue.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="flex justify-end gap-2">
-            <AlertDialogCancel onClick={() => setShowCreateBrandDialog(false)}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleCreateBrandNow}>Create Brand</AlertDialogAction>
-          </div>
-        </AlertDialogContent>
-      </AlertDialog>
 
       <SidebarFooter className="p-4 border-t border-sidebar-border">
         <SidebarMenu>
           <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive('/app/settings')}>
+            <SidebarMenuButton asChild isActive={isActive('/hub')}>
+              <NavLink to="/hub" className="flex items-center gap-3 px-3 py-2 rounded-md transition-colors text-sidebar-foreground hover:bg-sidebar-accent/50">
+                <ChefHat className="h-4 w-4 shrink-0" />
+                {!collapsed && <span>Command Center</span>}
+              </NavLink>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild isActive={isActive('/app/settings')}>
               <NavLink
                 to={hasBrand ? '/app/settings' : '#'}
                 onClick={(e) => {
@@ -354,10 +231,8 @@ export function AppSidebar() {
                   }
                 }}
                 className={cn(
-                  "flex items-center gap-3 px-3 py-2 rounded-md transition-colors",
-                  isActive('/app/settings')
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground font-medium"
-                    : "text-sidebar-foreground hover:bg-sidebar-accent/50",
+                  'flex items-center gap-3 px-3 py-2 rounded-md transition-colors',
+                  isActive('/app/settings') ? 'bg-sidebar-accent text-sidebar-accent-foreground font-medium' : 'text-sidebar-foreground hover:bg-sidebar-accent/50',
                   !hasBrand && 'opacity-60'
                 )}
               >
@@ -368,6 +243,22 @@ export function AppSidebar() {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
+
+      <AlertDialog open={showCreateBrandDialog} onOpenChange={setShowCreateBrandDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Create a brand first</AlertDialogTitle>
+            <AlertDialogDescription>
+              You need to create a brand before accessing workspace pages.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex justify-end gap-2">
+            <AlertDialogCancel onClick={() => setShowCreateBrandDialog(false)}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => navigate('/app/company-settings')}>Create Brand</AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sidebar>
   );
 }
+

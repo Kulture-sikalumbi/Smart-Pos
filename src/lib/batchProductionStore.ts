@@ -227,6 +227,9 @@ export async function recordBatchProduction(params: {
   for (const ing of nextBatch.ingredientsUsed) {
     const required = Number.isFinite(ing.requiredQty) ? ing.requiredQty : 0;
     if (required <= 0) continue;
+    if (String((ing as any).unitType ?? '').toUpperCase() === 'EACH' && !Number.isInteger(required)) {
+      throw new Error(`Invalid quantity for ${ing.ingredientName}: EACH items must use whole numbers.`);
+    }
     const onHand = mByItemId.get(String(ing.ingredientId)) ?? 0;
     if (required > onHand + 1e-9) insufficient.push({ itemId: ing.ingredientId, requiredQty: required, onHandQty: onHand });
   }

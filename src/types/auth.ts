@@ -2,7 +2,9 @@
 // Authentication & Authorization Types
 // ============================================
 
-export type UserRole = 'owner' | 'manager' | 'cashier' | 'waitron' | 'kitchen_staff' | 'bar_staff';
+export type UserRole = 'owner' | 'manager' | 'front_supervisor' | 'cashier' | 'waitron' | 'kitchen_staff' | 'bar_staff';
+export type AssignableStaffRole = 'front_supervisor' | 'cashier' | 'kitchen_staff';
+export const ASSIGNABLE_STAFF_ROLES: AssignableStaffRole[] = ['front_supervisor', 'cashier', 'kitchen_staff'];
 
 export interface User {
   id: string;
@@ -103,7 +105,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
     viewPurchases: true,
     createGRV: true,
     confirmGRV: true,
-    viewStaff: true,
+    viewStaff: false,
     manageStaff: false,
     accessPOS: true,
     createOrders: true,
@@ -117,9 +119,37 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
     viewSettings: true,
     manageSettings: false,
   },
+  front_supervisor: {
+    viewDashboard: false,
+    viewReports: true,
+    viewManagementOverview: false,
+    viewInventory: true,
+    manageInventory: true,
+    performStockTake: false,
+    createStockIssues: true,
+    viewRecipes: true,
+    manageRecipes: false,
+    recordBatchProduction: true,
+    viewPurchases: false,
+    createGRV: false,
+    confirmGRV: false,
+    viewStaff: false,
+    manageStaff: false,
+    accessPOS: true,
+    createOrders: true,
+    processPayments: true,
+    applyDiscounts: true,
+    voidItems: true,
+    transferTables: true,
+    viewOwnCashUp: true,
+    viewAllCashUps: true,
+    performCashUp: true,
+    viewSettings: false,
+    manageSettings: false,
+  },
   cashier: {
     viewDashboard: false,
-    viewReports: false,
+    viewReports: true,
     viewManagementOverview: false,
     viewInventory: false,
     manageInventory: false,
@@ -138,7 +168,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
     processPayments: true,
     applyDiscounts: false,
     voidItems: false,
-    transferTables: false,
+    transferTables: true,
     viewOwnCashUp: true,
     viewAllCashUps: false,
     performCashUp: true,
@@ -180,7 +210,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
     viewInventory: true,
     manageInventory: false,
     performStockTake: false,
-    createStockIssues: true,
+    createStockIssues: false,
     viewRecipes: true,
     manageRecipes: false,
     recordBatchProduction: true,
@@ -235,8 +265,51 @@ export const ROLE_PERMISSIONS: Record<UserRole, RolePermissions> = {
 export const ROLE_NAMES: Record<UserRole, string> = {
   owner: 'Owner',
   manager: 'Manager',
+  front_supervisor: 'Front Office Supervisor',
   cashier: 'Cashier',
   waitron: 'Waitron',
   kitchen_staff: 'Kitchen Staff',
   bar_staff: 'Bar Staff',
+};
+
+export function isAssignableStaffRole(role: unknown): role is AssignableStaffRole {
+  return role === 'front_supervisor' || role === 'cashier' || role === 'kitchen_staff';
+}
+
+export const ROLE_ACCESS_HELPERS: Record<UserRole, string[]> = {
+  owner: [
+    'Full Back Office + Front Office control',
+    'Can manage staff, settings, tax, and reports',
+    'Can approve stock, production, and sales operations',
+  ],
+  manager: [
+    'King of the Front: full Front Office supervision',
+    'Can manage front stock, production, receipts, and stock bridge views',
+    'Cannot access admin-only staff management controls',
+  ],
+  front_supervisor: [
+    'Full Front Office supervision without admin back-office powers',
+    'Can access POS, front stock controls, stock transfers, and batch operations',
+    'Can audit receipts and use stock issues bridge, but cannot manage staff/tax',
+  ],
+  cashier: [
+    'POS Terminal and Tables access',
+    'Can process sales and view basic receipts',
+    'No stock management or production tools',
+  ],
+  waitron: [
+    'Order taking and table operations',
+    'Limited POS actions with no inventory controls',
+    'No production or admin pages',
+  ],
+  kitchen_staff: [
+    'Kitchen Display and Batch Production access',
+    'Read-only front stock visibility for ingredient awareness',
+    'No sales, payments, or cash-related pages',
+  ],
+  bar_staff: [
+    'Counter sales workflow access',
+    'Limited operations focused on service execution',
+    'No admin and limited inventory controls',
+  ],
 };

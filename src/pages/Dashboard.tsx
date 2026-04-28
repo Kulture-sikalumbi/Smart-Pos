@@ -54,12 +54,17 @@ import { subscribeOrders, getOrdersSnapshot } from '@/lib/orderStore';
 import { subscribeGRVs, getGRVsSnapshot, refreshGRVs } from '@/lib/grvDbStore';
 import { subscribeExpenses, getExpensesSnapshot, addExpense } from '@/lib/expenseStore';
 import { subscribeStockTakes, getStockTakesSnapshot } from '@/lib/stockTakeStore';
-import { computeDashboardMetrics, fetchDashboardStatsFromDb } from '@/lib/dashboardMetrics';
+import { computeDelta, computeExecutiveMetrics, fetchDashboardStatsFromDb, mergeDashboardOverview } from '@/lib/dashboardMetrics';
 import { useAuth } from '@/contexts/AuthContext';
 import { useReportSharer } from '@/hooks/useReportSharer';
 import { subscribeToRealtimeOrders } from '@/lib/orderStore';
 import { subscribeToRealtimeStockItems } from '@/lib/stockStore';
 import { subscribeToRealtimeExpenses } from '@/lib/expenseStore';
+import { useDashboardDateRange } from '@/hooks/useDashboardDateRange';
+import { fetchFrontReconciliationSummary, fetchFrontVarianceAlerts, type FrontVarianceAlert } from '@/lib/stockTakeStore';
+import type { ExpenseCategory } from '@/types';
+import type { SalesMixItem, StockVariance } from '@/types';
+import type { DashboardStaffRow } from '@/lib/dashboardMetrics';
 
 export default function Dashboard() {
   const { user, brand, accountUser } = useAuth();
@@ -80,56 +85,83 @@ export default function Dashboard() {
     try {
       const oUnsub = subscribeToRealtimeOrders();
       if (oUnsub) unsubbers.push(oUnsub);
-    } catch {}
+    } catch {
+      // realtime optional
+    }
     try {
       const sUnsub = subscribeToRealtimeStockItems();
       if (sUnsub) unsubbers.push(sUnsub);
-    } catch {}
+    } catch {
+      // realtime optional
+    }
     try {
       const eUnsub = subscribeToRealtimeExpenses();
       if (eUnsub) unsubbers.push(eUnsub);
-    } catch {}
+    } catch {
+      // realtime optional
+    }
 
     return () => {
       for (const u of unsubbers) {
-        try { if (u) u(); } catch {}
+        try {
+          if (u) u();
+        } catch {
+          // ignore unsubscriber failures
+        }
       }
     };
   }, [accountUser, brandId]);
 
   
 
-  const today = useMemo(() => dateKeyLocal(new Date()), []);
-  const [startDate, setStartDate] = useState<string>(today);
-  const [endDate, setEndDate] = useState<string>(today);
+  const {
+    today,
+    startDate,
+    endDate,
+    setStartDate,
+    setEndDate,
+    safeRange,
+    previousRange,
+    isTodayRange,
+    rangeLabel,
+    preset,
+    applyPreset,
+  } = useDashboardDateRange();
   const [showDateFilters, setShowDateFilters] = useState<boolean>(false);
   const fromInputRef = useRef<HTMLInputElement>(null);
   const toInputRef = useRef<HTMLInputElement>(null);
-  const [dbSnapshot, setDbSnapshot] = useState<any | null>(null);
+  const [dbSnapshot, setDbSnapshot] = useState<Record<string, unknown> | null>(null);
+  const [dbSnapshotPrev, setDbSnapshotPrev] = useState<Record<string, unknown> | null>(null);
+  const [frontVarianceSummary, setFrontVarianceSummary] = useState({
+    count: 0,
+    varianceQtyTotal: 0,
+    varianceValueEstimate: 0,
+    byLocation: {
+      MANUFACTURING: { count: 0, varianceQty: 0, varianceValue: 0 },
+      SALE: { count: 0, varianceQty: 0, varianceValue: 0 },
+    },
+  });
+  const [frontVarianceAlerts, setFrontVarianceAlerts] = useState<FrontVarianceAlert[]>([]);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const isTodayRange = startDate === endDate && startDate === today;
-
-  const rangeLabel = useMemo(() => {
-    if (startDate === endDate && startDate === today) {
-      return "Today's reports";
-    }
-    if (startDate === endDate) {
-      return `Report for ${startDate}`;
-    }
-    return `Reports: ${startDate} → ${endDate}`;
-  }, [startDate, endDate, today]);
 
   // Always fetch DB metrics on mount and when brand/date changes
   const refreshDbMetrics = async () => {
     setIsLoading(true);
     const start = Date.now();
     try {
-      const res = await fetchDashboardStatsFromDb(brandId, startDate, endDate);
+      const res = await fetchDashboardStatsFromDb(brandId, safeRange.startDate, safeRange.endDate);
+      const prevRes = await fetchDashboardStatsFromDb(brandId, previousRange.startDate, previousRange.endDate);
+      const frontVar = await fetchFrontReconciliationSummary({ from: safeRange.startDate, to: safeRange.endDate });
+      const frontAlerts = await fetchFrontVarianceAlerts({ from: safeRange.startDate, to: safeRange.endDate, limit: 5 });
       if (res) {
-        setDbSnapshot(res);
-        if (res.last_updated) setLastUpdated(String(res.last_updated));
+        const typedRes = res as Record<string, unknown>;
+        setDbSnapshot(typedRes);
+        if (typedRes.last_updated) setLastUpdated(String(typedRes.last_updated));
       }
+      setDbSnapshotPrev((prevRes as Record<string, unknown> | null) ?? null);
+      setFrontVarianceSummary(frontVar);
+      setFrontVarianceAlerts(frontAlerts);
     } catch (e) {
       console.error('Failed to fetch dashboard stats from DB', e);
     } finally {
@@ -144,72 +176,59 @@ export default function Dashboard() {
     if (!accountUser || !brandId) return;
     refreshDbMetrics();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountUser, brandId, startDate, endDate]);
+  }, [accountUser, brandId, safeRange.startDate, safeRange.endDate, previousRange.startDate, previousRange.endDate]);
 
   // Always compute local metrics for instant feedback
   const metrics = useMemo(() => {
-    const safeStart = startDate <= endDate ? startDate : endDate;
-    const safeEnd = startDate <= endDate ? endDate : startDate;
-    return computeDashboardMetrics({
-      startDate: safeStart,
-      endDate: safeEnd,
+    return computeExecutiveMetrics({
+      startDate: safeRange.startDate,
+      endDate: safeRange.endDate,
       orders,
       grvs,
       expenses,
       stockTakes,
     });
-  }, [startDate, endDate, orders, grvs, expenses, stockTakes]);
+  }, [safeRange.startDate, safeRange.endDate, orders, grvs, expenses, stockTakes]);
+
+  const previousMetrics = useMemo(() => {
+    return computeExecutiveMetrics({
+      startDate: previousRange.startDate,
+      endDate: previousRange.endDate,
+      orders,
+      grvs,
+      expenses,
+      stockTakes,
+    });
+  }, [previousRange.startDate, previousRange.endDate, orders, grvs, expenses, stockTakes]);
 
   // Keep all displayed metrics firmly bound to selected date range via the local computeDashboardMetrics result.
   const data = useMemo(() => metrics.overview, [metrics.overview]);
+  const displayData = useMemo(() => mergeDashboardOverview(data, dbSnapshot), [data, dbSnapshot]);
+  const prevDisplayData = useMemo(
+    () => mergeDashboardOverview(previousMetrics.overview, dbSnapshotPrev),
+    [previousMetrics.overview, dbSnapshotPrev]
+  );
 
-  const displayData = useMemo(() => {
-    if (!dbSnapshot) return data;
+  // Unified data state: prefer DB arrays when present, else local computed.
+  const topSellers = useMemo(() => {
+    const fromDb = (dbSnapshot as any)?.topSellers;
+    return (Array.isArray(fromDb) && fromDb.length ? (fromDb as SalesMixItem[]) : metrics.topSellers) as SalesMixItem[];
+  }, [dbSnapshot, metrics.topSellers]);
 
-    const normalizedPayment = dbSnapshot.paymentBreakdown && typeof dbSnapshot.paymentBreakdown === 'object'
-      ? dbSnapshot.paymentBreakdown
-      : null;
+  const staffRows = useMemo(() => {
+    const fromDb = (dbSnapshot as any)?.staffRows;
+    return (Array.isArray(fromDb) && fromDb.length ? (fromDb as DashboardStaffRow[]) : metrics.staffRows) as DashboardStaffRow[];
+  }, [dbSnapshot, metrics.staffRows]);
 
-    const hoursPerDay = Array.isArray(dbSnapshot.hoursPerDay) && dbSnapshot.hoursPerDay.length > 0
-      ? Number((dbSnapshot.hoursPerDay.reduce((sum: number, h: any) => sum + Number(h.total || 0), 0) / dbSnapshot.hoursPerDay.length).toFixed(1))
-      : Number(data.hoursPerDay ?? 0);
+  const topVariances = useMemo(() => {
+    const fromDb = (dbSnapshot as any)?.varianceItems;
+    return (Array.isArray(fromDb) && fromDb.length ? (fromDb as StockVariance[]) : metrics.varianceItems) as StockVariance[];
+  }, [dbSnapshot, metrics.varianceItems]);
 
-    return {
-      ...data,
-      turnoverIncl: Number(dbSnapshot.turnoverIncl ?? dbSnapshot.turnover_incl ?? data.turnoverIncl ?? 0),
-      turnoverExcl: Number(dbSnapshot.turnoverExcl ?? dbSnapshot.turnover_excl ?? data.turnoverExcl ?? 0),
-      tax: Number(dbSnapshot.tax ?? data.tax ?? 0),
-      costOfSales: Number(dbSnapshot.costOfSales ?? dbSnapshot.cost_of_sales ?? data.costOfSales ?? 0),
-      costOfSalesPercent: Number(dbSnapshot.costOfSalesPercent ?? dbSnapshot.cost_of_sales_percent ?? data.costOfSalesPercent ?? 0),
-      grossProfit: Number(dbSnapshot.grossProfit ?? dbSnapshot.gross_profit ?? data.grossProfit ?? 0),
-      grossProfitPercent: Number(dbSnapshot.grossProfitPercent ?? dbSnapshot.gross_profit_percent ?? data.grossProfitPercent ?? 0),
-      expenses: Number(dbSnapshot.expenses ?? data.expenses ?? 0),
-      netProfit: Number(dbSnapshot.netProfit ?? dbSnapshot.net_profit ?? data.netProfit ?? 0),
-      invoiceCount: Number(dbSnapshot.invoiceCount ?? dbSnapshot.invoices_count ?? data.invoiceCount ?? 0),
-      customerCount: Number(dbSnapshot.customerCount ?? dbSnapshot.customer_count ?? data.customerCount ?? 0),
-      tableCount: Number(dbSnapshot.tableCount ?? dbSnapshot.table_count ?? data.tableCount ?? 0),
-      avgPerInvoice: Number(dbSnapshot.avgPerInvoice ?? dbSnapshot.avg_per_invoice ?? data.avgPerInvoice ?? 0),
-      tablesPerHour: Number(dbSnapshot.tablesPerHour ?? dbSnapshot.tables_per_hour ?? data.tablesPerHour ?? 0),
-      minsPerTable: Number(dbSnapshot.minsPerTable ?? dbSnapshot.mins_per_table ?? data.minsPerTable ?? 0),
-      hoursPerDay,
-      stockVarianceValue: Number(dbSnapshot.stockVarianceValue ?? dbSnapshot.stock_variance_value ?? data.stockVarianceValue ?? 0),
-      wastageValue: Number(dbSnapshot.wastageValue ?? dbSnapshot.wastage_value ?? data.wastageValue ?? 0),
-      cashTotal: Number(dbSnapshot.cashTotal ?? dbSnapshot.cash_total ?? normalizedPayment?.cash ?? data.cashTotal ?? 0),
-      chequeTotal: Number(dbSnapshot.chequeTotal ?? dbSnapshot.cheque_total ?? normalizedPayment?.cheque ?? data.chequeTotal ?? 0),
-      cardTotal: Number(dbSnapshot.cardTotal ?? dbSnapshot.card_total ?? normalizedPayment?.card ?? data.cardTotal ?? 0),
-      accountTotal: Number(dbSnapshot.accountTotal ?? dbSnapshot.account_total ?? normalizedPayment?.account ?? data.accountTotal ?? 0),
-      nonBankTotal: Number(dbSnapshot.nonBankTotal ?? dbSnapshot.non_bank_total ?? normalizedPayment?.non_bank ?? data.nonBankTotal ?? 0),
-      totalPaytypes: Number(dbSnapshot.totalPaytypes ?? dbSnapshot.total_paytypes ?? data.totalPaytypes ?? 0),
-      sessions: dbSnapshot.sessions ?? dbSnapshot.session_breakdown ?? data.sessions,
-      orderTypes: dbSnapshot.orderTypes ?? dbSnapshot.order_types ?? data.orderTypes,
-    };
-  }, [dbSnapshot, data]);
-
-  // Unified data state: prefer local metrics for date-range consistency.
-  const topSellers = dbSnapshot?.topSellers?.length ? dbSnapshot.topSellers : metrics.topSellers;
-  const staffRows = dbSnapshot?.staffRows?.length ? dbSnapshot.staffRows : metrics.staffRows;
-  const topVariances = dbSnapshot?.varianceItems?.length ? dbSnapshot.varianceItems : metrics.varianceItems;
-  const lowSeller = dbSnapshot?.lowSeller ?? metrics.lowSeller;
+  const lowSeller = useMemo(() => {
+    const fromDb = (dbSnapshot as any)?.lowSeller;
+    return fromDb ?? metrics.lowSeller;
+  }, [dbSnapshot, metrics.lowSeller]);
 
   const { shareDailyReport, downloadCsv, downloadDoc, shareViaWhatsApp, downloadMetricCsv } = useReportSharer();
 
@@ -226,8 +245,8 @@ export default function Dashboard() {
     return Number(displayData.hoursPerDay ?? 0);
   }, [displayData.hoursPerDay]);
 
-  const cashierShiftsByStaff = Array.isArray(dbSnapshot?.cashierShiftsByStaff)
-    ? dbSnapshot.cashierShiftsByStaff
+  const cashierShiftsByStaff: Array<Record<string, any>> = Array.isArray((dbSnapshot as any)?.cashierShiftsByStaff)
+    ? (((dbSnapshot as any).cashierShiftsByStaff as Array<Record<string, any>>) ?? [])
     : [];
 
   const cashierShiftCount = Number(dbSnapshot?.cashierShiftCount ?? 0);
@@ -238,9 +257,9 @@ export default function Dashboard() {
 
   const dashboardReport = useMemo(() => {
     return {
-      date: endDate,
-      startDate,
-      endDate,
+      date: safeRange.endDate,
+      startDate: safeRange.startDate,
+      endDate: safeRange.endDate,
       brandName: brand?.name || user?.name || 'Profit Maker POS',
       totals: {
         netSales: Number(displayData.turnoverExcl || 0),
@@ -249,21 +268,21 @@ export default function Dashboard() {
         profit: Number(displayData.grossProfit || 0),
         laborCost: Number(displayData.expenses || 0),
       },
-      topSellingItems: topSellers.slice(0, 20).map((item: any) => ({
-        name: item.itemName || item.name || 'N/A',
-        quantity: Number(item.quantity || item.qty || 0),
-        totalSales: Number(item.totalSales || item.sales || 0),
+      topSellingItems: topSellers.slice(0, 20).map((item) => ({
+        name: item.itemName || 'N/A',
+        quantity: Number(item.quantity || 0),
+        totalSales: Number(item.totalSales || 0),
       })),
-      stockVariances: topVariances.slice(0, 20).map((item: any) => ({
+      stockVariances: topVariances.slice(0, 20).map((item) => ({
         item: item.itemName || 'N/A',
-        theoretical: Number(item.varianceQty || 0),
-        actual: Number(item.varianceQty || 0),
+        theoretical: Number(item.systemQty || 0),
+        actual: Number(item.physicalQty || 0),
         uom: 'units',
         cost: Number(item.varianceValue || 0),
       })),
       voids: [],
     };
-  }, [endDate, displayData, topSellers, topVariances, brand?.name, user?.name]);
+  }, [safeRange.endDate, safeRange.startDate, displayData, topSellers, topVariances, brand?.name, user?.name]);
 
   const [expenseOpen, setExpenseOpen] = useState(false);
   const [expenseDate, setExpenseDate] = useState<string>(endDate);
@@ -299,7 +318,7 @@ export default function Dashboard() {
     if (!Number.isFinite(amount) || amount <= 0) return;
     addExpense({
       date: expenseDate,
-      category: expenseCategory as any,
+      category: expenseCategory as ExpenseCategory,
       amount,
       description: expenseDescription,
     });
@@ -342,7 +361,12 @@ export default function Dashboard() {
           <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight">Today's Reports</h2>
         </div>
       ) : null}
-      <div className="mb-3 text-sm text-muted-foreground font-medium">{rangeLabel}</div>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div className="text-sm text-muted-foreground font-medium">{rangeLabel}</div>
+        <Button size="sm" variant={preset === 'today' ? 'default' : 'outline'} onClick={() => applyPreset('today')}>Today</Button>
+        <Button size="sm" variant={preset === 'last7' ? 'default' : 'outline'} onClick={() => applyPreset('last7')}>Last 7d</Button>
+        <Button size="sm" variant={preset === 'last30' ? 'default' : 'outline'} onClick={() => applyPreset('last30')}>Last 30d</Button>
+      </div>
       {!isLoading && isTodayRange && !hasReportActivity ? (
         <div className="mb-4 rounded-lg border border-primary/30 bg-primary/5 px-4 py-4 text-center">
           <div className="text-base sm:text-lg font-semibold">No activity recorded for today yet.</div>
@@ -427,7 +451,7 @@ export default function Dashboard() {
       </div>
 
       {/* Primary KPIs */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div className="grid [grid-template-columns:repeat(auto-fit,minmax(260px,1fr))] gap-4 mb-6">
         {[
           {
             title: 'Total Turnover (Incl)',
@@ -455,6 +479,15 @@ export default function Dashboard() {
             icon: <DollarSign className={`h-5 w-5 ${displayData.netProfit >= 0 ? 'text-success' : 'text-destructive'}`} />,
             metricName: 'Net Profit',
           },
+          {
+            title: 'Gross Profit',
+            value: formatMoneyPrecise(displayData.grossProfit, 2),
+            rawValue: displayData.grossProfit,
+            subtitle: `${Number(displayData.grossProfitPercent ?? 0).toFixed(2)}% margin`,
+            variant: displayData.grossProfit >= 0 ? 'success' : 'danger',
+            icon: <TrendingUp className={`h-5 w-5 ${displayData.grossProfit >= 0 ? 'text-success' : 'text-destructive'}`} />,
+            metricName: 'Gross Profit',
+          },
         ].map((kpi) => (
           <div key={kpi.title} className="relative">
             <KPICard
@@ -462,7 +495,7 @@ export default function Dashboard() {
               value={kpi.value}
               loading={isLoading}
               subtitle={kpi.subtitle}
-              variant={kpi.variant as any}
+              variant={kpi.variant as 'warning' | 'success' | 'danger' | undefined}
               icon={kpi.icon}
             />
             <button
@@ -475,9 +508,25 @@ export default function Dashboard() {
           </div>
         ))}
       </div>
+      <div className="mb-6 rounded-lg border border-primary/20 bg-primary/5 p-4">
+        <h3 className="text-sm font-semibold mb-3">Period-over-period deltas</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+          {[
+            { label: 'Turnover', value: computeDelta(displayData.turnoverIncl, prevDisplayData.turnoverIncl).deltaPercent },
+            { label: 'Net Profit', value: computeDelta(displayData.netProfit, prevDisplayData.netProfit).deltaPercent },
+            { label: 'Invoices', value: computeDelta(displayData.invoiceCount, prevDisplayData.invoiceCount).deltaPercent },
+            { label: 'Variance Value', value: computeDelta(displayData.stockVarianceValue, prevDisplayData.stockVarianceValue).deltaPercent },
+          ].map((d) => (
+            <div key={d.label} className="rounded border bg-background/70 p-3">
+              <p className="text-muted-foreground">{d.label}</p>
+              <p className={`font-semibold ${d.value >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>{d.value >= 0 ? '+' : ''}{d.value.toFixed(2)}%</p>
+            </div>
+          ))}
+        </div>
+      </div>
 
       {/* Secondary KPIs */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
+      <div className="grid [grid-template-columns:repeat(auto-fit,minmax(220px,1fr))] gap-4 mb-6">
         <KPICard
           title="Invoices"
           value={displayData.invoiceCount}
@@ -556,9 +605,9 @@ export default function Dashboard() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {cashierShiftsByStaff.map((item: any) => (
-                    <TableRow key={item.staff_id} className="border-b-white/10">
-                      <TableCell className="font-medium">{item.staff_name}</TableCell>
+                  {cashierShiftsByStaff.map((item: Record<string, any>, idx: number) => (
+                    <TableRow key={String(item.staff_id ?? `cashier-${idx}`)} className="border-b-white/10">
+                      <TableCell className="font-medium">{String(item.staff_name ?? '')}</TableCell>
                       <TableCell className="text-right">{Number(item.shifts || 0)}</TableCell>
                       <TableCell className="text-right">{formatMoneyPrecise(Number(item.opening_cash || 0), 2)}</TableCell>
                       <TableCell className="text-right">{formatMoneyPrecise(Number(item.closing_cash || 0), 2)}</TableCell>
@@ -624,24 +673,9 @@ export default function Dashboard() {
           <CardContent className="space-y-4">
             {(() => {
               // Use DB snapshot if available, else fallback to local
-              let eatIn = { value: 0, percent: 0 };
-              let takeOut = { value: 0, percent: 0 };
-              let delivery = { value: 0, percent: 0 };
-              if (displayData.orderTypes) {
-                const ot = displayData.orderTypes;
-                const total =
-                  Number(ot.eat_in || 0) + Number(ot.take_out || 0) + Number(ot.delivery || 0);
-                eatIn.value = Number(ot.eat_in || 0);
-                takeOut.value = Number(ot.take_out || 0);
-                delivery.value = Number(ot.delivery || 0);
-                eatIn.percent = total > 0 ? Number(((eatIn.value / total) * 100).toFixed(1)) : 0;
-                takeOut.percent = total > 0 ? Number(((takeOut.value / total) * 100).toFixed(1)) : 0;
-                delivery.percent = total > 0 ? Number(((delivery.value / total) * 100).toFixed(1)) : 0;
-              } else if (displayData.orderTypes) {
-                eatIn = displayData.orderTypes.eatIn;
-                takeOut = displayData.orderTypes.takeOut;
-                delivery = displayData.orderTypes.delivery;
-              }
+              const eatIn = displayData.orderTypes?.eatIn ?? { value: 0, percent: 0 };
+              const takeOut = displayData.orderTypes?.takeOut ?? { value: 0, percent: 0 };
+              const delivery = displayData.orderTypes?.delivery ?? { value: 0, percent: 0 };
               return (
                 <>
                   <div className="flex items-center justify-between">
@@ -700,6 +734,58 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <Card className="mthunzi-card">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base font-medium">Inventory Intelligence (Back + Front)</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 gap-4 text-sm">
+            <div className="rounded border p-3">
+              <p className="text-muted-foreground">Back-office variance value</p>
+              <p className="font-semibold">{formatMoneyPrecise(displayData.stockVarianceValue, 2)}</p>
+            </div>
+            <div className="rounded border p-3">
+              <p className="text-muted-foreground">Front reconciliation value</p>
+              <p className="font-semibold">{formatMoneyPrecise(frontVarianceSummary.varianceValueEstimate, 2)}</p>
+            </div>
+            <div className="rounded border p-3">
+              <p className="text-muted-foreground">Front reconciliation lines</p>
+              <p className="font-semibold">{frontVarianceSummary.count}</p>
+            </div>
+            <div className="rounded border p-3">
+              <p className="text-muted-foreground">Front variance qty total</p>
+              <p className="font-semibold">{frontVarianceSummary.varianceQtyTotal.toFixed(2)}</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="mthunzi-card">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base font-medium">Production & Operations</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-2 gap-4 text-sm">
+            <div className="rounded border p-3">
+              <p className="text-muted-foreground">Stock issues</p>
+              <p className="font-semibold">{metrics.operational.stockIssueCount}</p>
+              <p className="text-xs text-muted-foreground">Value {formatMoneyPrecise(metrics.operational.stockIssueValue, 2)}</p>
+            </div>
+            <div className="rounded border p-3">
+              <p className="text-muted-foreground">Batches recorded</p>
+              <p className="font-semibold">{metrics.operational.productionBatchCount}</p>
+            </div>
+            <div className="rounded border p-3">
+              <p className="text-muted-foreground">Avg yield variance</p>
+              <p className="font-semibold">{metrics.operational.averageYieldVariancePercent.toFixed(2)}%</p>
+            </div>
+            <div className="rounded border p-3">
+              <p className="text-muted-foreground">Cash-up variance</p>
+              <p className={`font-semibold ${metrics.operational.cashUpVarianceTotal >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                {formatMoneyPrecise(metrics.operational.cashUpVarianceTotal, 2)}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         {/* Stock Variances Alert */}
         <Card className="mthunzi-card">
           <CardHeader className="pb-3">
@@ -709,11 +795,17 @@ export default function Dashboard() {
             </CardTitle>
           </CardHeader>
           <CardContent>
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+              <span className="rounded border px-2 py-1">Back Office</span>
+              <span className="rounded border px-2 py-1">Front Office</span>
+            </div>
             <DataTableWrapper>
               <Table>
                 <TableHeader>
                   <TableRow className="border-b-white/10">
+                    <TableHead>Source</TableHead>
                     <TableHead>Item</TableHead>
+                    <TableHead>Location</TableHead>
                     <TableHead className="text-right">Variance Qty</TableHead>
                     <TableHead className="text-right">Value</TableHead>
                   </TableRow>
@@ -722,26 +814,37 @@ export default function Dashboard() {
                   {isLoading ? (
                     Array.from({ length: 5 }).map((_, idx) => (
                       <TableRow key={`variance-loading-${idx}`} className="border-b-white/10 animate-pulse">
+                        <TableCell><div className="h-4 w-14 bg-muted/20 rounded" /></TableCell>
                         <TableCell className="font-medium"><div className="h-4 w-24 bg-muted/20 rounded" /></TableCell>
+                        <TableCell><div className="h-4 w-14 bg-muted/20 rounded" /></TableCell>
                         <TableCell className="text-right"><div className="h-4 w-10 bg-muted/20 rounded ml-auto" /></TableCell>
                         <TableCell className="text-right"><div className="h-4 w-16 bg-muted/20 rounded ml-auto" /></TableCell>
                       </TableRow>
                     ))
-                  ) : topVariances.length ? (
-                    topVariances.map((item) => (
-                      <TableRow key={item.id} className="border-b-white/10">
-                        <TableCell className="font-medium">{item.itemName}</TableCell>
+                  ) : topVariances.length || frontVarianceAlerts.length ? (
+                    [...topVariances.map((item) => ({ source: 'BACK' as const, location: 'MAIN', item })), ...frontVarianceAlerts.map((item) => ({ source: 'FRONT' as const, location: item.locationTag, item }))]
+                      .sort((a, b) => Math.abs(Number(b.item.varianceValue ?? 0)) - Math.abs(Number(a.item.varianceValue ?? 0)))
+                      .slice(0, 8)
+                      .map((entry, idx) => (
+                      <TableRow key={`${entry.source}-${entry.item.id}-${idx}`} className="border-b-white/10">
+                        <TableCell>
+                          <StatusBadge status={entry.source === 'BACK' ? 'neutral' : 'positive'}>
+                            {entry.source}
+                          </StatusBadge>
+                        </TableCell>
+                        <TableCell className="font-medium">{entry.item.itemName}</TableCell>
+                        <TableCell>{entry.location}</TableCell>
                         <TableCell className="text-right">
-                          <NumericCell value={item.varianceQty} showSign colorCode />
+                          <NumericCell value={entry.item.varianceQty} showSign colorCode />
                         </TableCell>
                         <TableCell className="text-right">
-                          <NumericCell value={item.varianceValue} money showSign colorCode />
+                          <NumericCell value={entry.item.varianceValue} money showSign colorCode />
                         </TableCell>
                       </TableRow>
                     ))
                   ) : (
                     <TableRow className="border-b-white/10">
-                      <TableCell colSpan={3} className="text-sm text-muted-foreground">
+                      <TableCell colSpan={5} className="text-sm text-muted-foreground">
                         No stock take saved for this period.
                       </TableCell>
                     </TableRow>

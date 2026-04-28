@@ -4,6 +4,7 @@ import "./index.css";
 import { HashRouter } from "react-router-dom";
 import { TenantProvider } from "./contexts/TenantContext";
 import { AuthProvider } from "./contexts/AuthContext";
+import { WorkspaceProvider } from "./contexts/WorkspaceContext";
 
 const isDesktopRuntime = typeof window !== 'undefined' && Boolean((window as any).electron);
 
@@ -25,7 +26,9 @@ createRoot(document.getElementById("root")!).render(
           v7_relativeSplatPath: true,
         }}
       >
-        <App />
+        <WorkspaceProvider>
+          <App />
+        </WorkspaceProvider>
       </HashRouter>
     </TenantProvider>
   </AuthProvider>

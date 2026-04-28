@@ -454,6 +454,9 @@ export function RecipeEditorDialog(props: {
     if (!trimmedName) validationErrors.push('Name is required.');
     if (!trimmedCode) validationErrors.push('Code is required.');
     if (!(typeof outputQty === 'number' && Number.isFinite(outputQty) && outputQty > 0)) validationErrors.push('Output Qty must be greater than 0.');
+    if (outputUnitType === 'EACH' && typeof outputQty === 'number' && Number.isFinite(outputQty) && !Number.isInteger(outputQty)) {
+      validationErrors.push('Output Qty must be a whole number for EACH unit recipes.');
+    }
     if (!ingredients.length) validationErrors.push('Add at least one ingredient.');
 
     if (ingredients.length) {
@@ -462,6 +465,10 @@ export function RecipeEditorDialog(props: {
         const qty = typeof i.requiredQty === 'number' && Number.isFinite(i.requiredQty) ? i.requiredQty : 0;
         if (!s) validationErrors.push('One or more ingredients are invalid. Re-select ingredient(s).');
         if (!(qty > 0)) validationErrors.push(`Ingredient quantity must be > 0 (${s?.name ?? i.ingredientId}).`);
+        const unitText = String(i.unit ?? '').toLowerCase();
+        if (unitText === 'each' && qty > 0 && !Number.isInteger(qty)) {
+          validationErrors.push(`Ingredient quantity must be a whole number for EACH (${s?.name ?? i.ingredientId}).`);
+        }
       }
     }
 
@@ -648,7 +655,7 @@ export function RecipeEditorDialog(props: {
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Output Qty</Label>
-              <Input type="number" min={0.0001} step="0.01" value={outputQty} onChange={(e) => {
+              <Input type="number" min={0.0001} step={outputUnitType === 'EACH' ? '1' : '0.01'} value={outputQty} onChange={(e) => {
                 const val = e.target.value;
                 if (val === '') {
                   setOutputQty('');
@@ -758,7 +765,7 @@ export function RecipeEditorDialog(props: {
                             className="h-9 w-24 text-right"
                             type="number"
                             min={0}
-                            step="0.01"
+                            step={(ing.unit ?? '').toLowerCase() === 'each' ? '1' : '0.01'}
                             value={ing.requiredQty}
                             onChange={(e) => {
                               const val = e.target.value;

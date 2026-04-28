@@ -47,10 +47,12 @@ export function KPICard({ title, value, subtitle, trend, trendValue, icon, varia
     neutral: 'text-muted-foreground',
   };
 
+  const valueText = String(value ?? '');
+
   return (
     <div className={cn('mthunzi-card p-4', variantStyles[variant])}>
       <div className="flex items-start justify-between">
-        <div>
+        <div className="min-w-0 flex-1">
           <p className="text-sm font-medium text-muted-foreground">{title}</p>
           {loading ? (
             <div className="mt-2 flex items-center gap-3">
@@ -65,8 +67,17 @@ export function KPICard({ title, value, subtitle, trend, trendValue, icon, varia
             </div>
           ) : (
             <>
-              <p className="text-2xl font-bold mt-1">{value}</p>
-              {subtitle && <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>}
+              <p
+                className={cn('text-2xl font-bold mt-1 leading-tight tabular-nums break-words')}
+                title={valueText}
+              >
+                {value}
+              </p>
+              {subtitle && (
+                <p className="text-xs text-muted-foreground mt-1 break-words" title={subtitle}>
+                  {subtitle}
+                </p>
+              )}
               {trend && trendValue && (
                 <p className={cn('text-xs mt-2', trendColors[trend])}>
                   {trend === 'up' ? '↑' : trend === 'down' ? '↓' : '→'} {trendValue}
@@ -76,7 +87,7 @@ export function KPICard({ title, value, subtitle, trend, trendValue, icon, varia
           )}
         </div>
         {icon && (
-          <div className="p-3 rounded-lg bg-primary/10">
+          <div className="p-3 rounded-lg bg-primary/10 shrink-0 ml-3">
             {icon}
           </div>
         )}

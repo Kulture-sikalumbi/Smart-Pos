@@ -37,7 +37,13 @@ export default function Settings() {
   const isZambia = useMemo(() => receiptSettings.countryCode === 'ZM', [receiptSettings.countryCode]);
 
   const save = () => {
-    saveReceiptSettings(receiptSettings);
+    // Ensure receipt settings and global currency stay in lockstep.
+    // The currency picker below is the global system currency; receipt settings should follow it.
+    const nextCurrency = String(receiptSettings.currencyCode ?? currencyCode ?? 'ZMW').toUpperCase() as ReceiptSettings['currencyCode'];
+    if (nextCurrency && String(currencyCode ?? '').toUpperCase() !== nextCurrency) {
+      setCurrencyCode(nextCurrency as any);
+    }
+    saveReceiptSettings({ ...receiptSettings, currencyCode: nextCurrency });
     setSavedAt(new Date().toLocaleTimeString());
   };
 
@@ -74,6 +80,7 @@ export default function Settings() {
 
   useEffect(() => {
     setCurrencyDraft(String(currencyCode ?? 'ZMW').toUpperCase());
+    setReceiptSettings((s) => ({ ...s, currencyCode: (String(currencyCode ?? 'ZMW').toUpperCase() as ReceiptSettings['currencyCode']) }));
   }, [currencyCode]);
 
   useEffect(() => {
@@ -239,9 +246,15 @@ export default function Settings() {
             <div className="space-y-1">
               <div className="text-sm font-medium">Currency</div>
               <Input
-                value={receiptSettings.currencyCode}
-                onChange={(e) => setReceiptSettings((s) => ({ ...s, currencyCode: e.target.value as ReceiptSettings['currencyCode'] }))}
+                value={String(receiptSettings.currencyCode ?? currencyCode ?? 'ZMW').toUpperCase()}
+                onChange={(e) => {
+                  if (!hasPermission('manageSettings')) return;
+                  const next = String(e.target.value ?? '').toUpperCase() as ReceiptSettings['currencyCode'];
+                  setReceiptSettings((s) => ({ ...s, currencyCode: next }));
+                  setCurrencyDraft(next);
+                }}
                 placeholder="ZMW"
+                disabled={!hasPermission('manageSettings')}
               />
               <div className="text-xs text-muted-foreground">Used for totals and USD conversion.</div>
             </div>
@@ -608,6 +621,13 @@ export default function Settings() {
                 if (!hasPermission('manageSettings')) return;
                 const next = (currencyDraft.trim().toUpperCase() || 'ZMW') as any;
                 setCurrencyCode(next);
+                // Mirror into receipt settings immediately so print/receipts stay consistent.
+                setReceiptSettings((s) => ({ ...s, currencyCode: next as ReceiptSettings['currencyCode'] }));
+                try {
+                  saveReceiptSettings({ ...getReceiptSettings(), currencyCode: next as ReceiptSettings['currencyCode'] });
+                } catch {
+                  // ignore
+                }
                 setSavedAt(new Date().toLocaleTimeString());
               }}
               disabled={!hasPermission('manageSettings') || !currencyDraft.trim()}
