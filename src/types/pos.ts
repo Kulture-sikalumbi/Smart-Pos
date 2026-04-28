@@ -6,10 +6,12 @@ export type TableStatus = 'available' | 'occupied' | 'reserved' | 'dirty';
 export type OrderStatus = 'open' | 'sent' | 'in_progress' | 'ready' | 'served' | 'paid' | 'voided';
 export type OrderType = 'eat_in' | 'take_out' | 'delivery';
 export type PaymentMethod = 'cash' | 'card' | 'cheque' | 'account' | 'non_bank';
+export type OrderSource = 'pos' | 'tablet' | 'self_order' | 'qr';
 
 export interface Table {
   id: string;
   number: number;
+  name?: string;
   seats: number;
   status: TableStatus;
   currentOrderId?: string;
@@ -37,6 +39,7 @@ export interface OrderItem {
 export interface Order {
   id: string;
   orderNo: number;
+  source?: OrderSource;
   /** Server-side cashier shift id (X/Z reporting). */
   shiftId?: string;
   tillId?: string;

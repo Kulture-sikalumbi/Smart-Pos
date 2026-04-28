@@ -3,11 +3,13 @@ import { Card } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/common/PageComponents';
-import { tables } from '@/data/posData';
 import { generateQrDataUrl } from '@/lib/qr';
+import { useRestaurantTables } from '@/hooks/useRestaurantTables';
 
 export default function TableQrCodes() {
   const [qrs, setQrs] = useState<Record<string, string>>({});
+  const { sections } = useRestaurantTables();
+  const tables = useMemo(() => sections.flatMap((s) => s.tables), [sections]);
 
   const baseUrl = useMemo(() => {
     // For demo we use current origin. In production you would set this in Settings.

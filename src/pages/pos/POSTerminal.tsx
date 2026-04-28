@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { ShoppingCart, Send, Trash2, Plus, Minus, CreditCard, Users, Percent, Settings as SettingsIcon, RefreshCw, Wifi, BellRing, FolderOpen, LogOut, MoreHorizontal, Receipt } from 'lucide-react';
+import { ShoppingCart, Send, Trash2, Plus, Minus, CreditCard, Users, Percent, Settings as SettingsIcon, RefreshCw, BellRing, FolderOpen, LogOut, MoreHorizontal, Receipt } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -13,16 +13,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { useAuth } from '@/contexts/AuthContext';
-import { tables } from '@/data/posData';
+import { useRestaurantTables } from '@/hooks/useRestaurantTables';
 import { OrderItem, Order, OrderType, PaymentMethod, POSMenuItem } from '@/types/pos';
 import { cn } from '@/lib/utils';
 import PaymentDialog from '@/components/pos/PaymentDialog';
 import { RecipeIncompleteError } from '@/lib/recipeEngine';
 import { getManufacturingRecipesSnapshot } from '@/lib/manufacturingRecipeStore';
-import { getOrdersSnapshot, subscribeOrders, upsertOrder, sendOrderPayload } from '@/lib/orderStore';
+import { getOrdersSnapshot, subscribeOrders, subscribeToRealtimeOrders, upsertOrder, sendOrderPayload } from '@/lib/orderStore';
 import useKitchenRealtime from '@/hooks/useKitchenRealtime';
 import { useToast } from '@/hooks/use-toast';
 // debug viewer removed
@@ -32,12 +32,10 @@ import { useBranding } from '@/contexts/BrandingContext';
 import ReceiptPrintDialog from '@/components/pos/ReceiptPrintDialog';
 import { usePosMenu } from '@/hooks/usePosMenu';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Command, CommandEmpty, CommandGroup, CommandItem, CommandList } from '@/components/ui/command';
-import { parseSmartQuantityQuery, smartSearchMenuItems } from '@/lib/smartMenuSearch';
 import { getPosPaymentRequestsSnapshot, resolvePosPaymentRequest, subscribePosPaymentRequests } from '@/lib/posPaymentRequestStore';
 import { getPosNotificationsSnapshot, subscribePosNotifications, markNotificationsSeen, deleteNotificationById } from '@/lib/posNotificationStore';
 import { ROLE_NAMES } from '@/types/auth';
-import { createEphemeralSupabaseClient, supabase } from '@/lib/supabaseClient';
+import { supabase } from '@/lib/supabaseClient';
 import { useCurrency } from '@/contexts/CurrencyContext';
 import { getFrontStockSnapshot, subscribeFrontStock } from '@/lib/frontStockStore';
 
@@ -73,14 +71,34 @@ export default function POSTerminal() {
   const items = useMemo(() => menu.items.slice(), [menu.items]);
   const orders = useSyncExternalStore(subscribeOrders, getOrdersSnapshot);
   const frontStock = useSyncExternalStore(subscribeFrontStock, getFrontStockSnapshot);
+  const { sections: restaurantTableSections } = useRestaurantTables();
+  const tables = useMemo(() => restaurantTableSections.flatMap((s) => s.tables), [restaurantTableSections]);
 
   // debug viewer removed
 
   // Subscribe to kitchen realtime events so the POS sees remote kitchen updates
   useKitchenRealtime();
 
+  // Also subscribe to order header/item realtime so table/tablet orders arrive fast.
+  useEffect(() => {
+    const unsub = subscribeToRealtimeOrders();
+    return () => {
+      try { if (unsub) unsub(); } catch {}
+    };
+  }, []);
+
   const { toast } = useToast();
   const prevReadyRef = useRef<Set<string>>(new Set());
+  const seenIncomingOrderIdsRef = useRef<Set<string>>(new Set());
+  const seenIncomingCallNotifIdsRef = useRef<Set<string>>(new Set());
+  const [incomingOrders, setIncomingOrders] = useState<Array<{ id: string; orderNo: number; tableNo?: number; tableLabel?: string; total: number; source?: string; createdAt: string }>>([]);
+  const [incomingCalls, setIncomingCalls] = useState<Array<{ id: string; tableNo?: number; tableLabel?: string; createdAt: string }>>([]);
+  const [showIncomingOrders, setShowIncomingOrders] = useState(false);
+  const posNotifs = useSyncExternalStore(subscribePosNotifications, getPosNotificationsSnapshot);
+  const requestNotifs = useMemo(
+    () => posNotifs.filter((n) => String(n.type ?? '') !== 'waiter_call' && String(n.type ?? '') !== 'tablet_order_seen'),
+    [posNotifs]
+  );
 
   useEffect(() => {
     const readyIds = new Set(orders.filter((o) => o.status === 'ready').map((o) => o.id));
@@ -101,6 +119,45 @@ export default function POSTerminal() {
     }
     prevReadyRef.current = readyIds;
   }, [orders, toast]);
+
+  // Detect new incoming tablet orders and queue them (never overwrite current cart).
+  useEffect(() => {
+    try {
+      const next: Array<{ id: string; orderNo: number; tableNo?: number; tableLabel?: string; total: number; source?: string; createdAt: string }> = [];
+      const nowMs = Date.now();
+      for (const o of orders) {
+        const source = (o as any).source ?? 'pos';
+        if (source !== 'tablet') continue;
+        if (seenIncomingOrderIdsRef.current.has(o.id)) continue;
+        const createdMs = new Date(o.createdAt).getTime();
+        // Only treat relatively recent arrivals as "incoming" to avoid backfilling noise.
+        if (Number.isFinite(createdMs) && nowMs - createdMs > 1000 * 60 * 30) {
+          seenIncomingOrderIdsRef.current.add(o.id);
+          continue;
+        }
+        seenIncomingOrderIdsRef.current.add(o.id);
+        next.push({
+          id: o.id,
+          orderNo: o.orderNo,
+          tableNo: o.tableNo,
+          tableLabel: o.tableNo ? `Table ${o.tableNo}` : undefined,
+          total: o.total,
+          source,
+          createdAt: o.createdAt,
+        });
+      }
+      if (next.length > 0) {
+        // Chime once per batch.
+        try {
+          playNotificationTone();
+        } catch {}
+        setIncomingOrders((prev) => [...next, ...prev].slice(0, 50));
+      }
+    } catch {
+      // ignore
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders]);
 
   // Online/offline status toast and internal state.
   useEffect(() => {
@@ -172,8 +229,6 @@ export default function POSTerminal() {
   const [orderType, setOrderType] = useState<OrderType>('eat_in');
   const [selectedTable, setSelectedTable] = useState<number | null>(null);
   const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [searchOpen, setSearchOpen] = useState(false);
   const [showPayment, setShowPayment] = useState(false);
   const [showTableSelect, setShowTableSelect] = useState(false);
   const [showHeldOrders, setShowHeldOrders] = useState(false);
@@ -224,7 +279,6 @@ export default function POSTerminal() {
   const [tillSetupBusy, setTillSetupBusy] = useState(false);
   const [tillSetupError, setTillSetupError] = useState<string | null>(null);
   const [supervisorEmail, setSupervisorEmail] = useState('');
-  const [supervisorPin, setSupervisorPin] = useState('');
   const [availableTills, setAvailableTills] = useState<Array<{ id: string; code: string; name: string }>>([]);
   const [selectedTillId, setSelectedTillId] = useState<string>('');
   const tillAutoLoadTimerRef = useRef<number | null>(null);
@@ -365,53 +419,23 @@ export default function POSTerminal() {
   const loadTillsForSupervisor = async () => {
     if (!supabase) return;
     const email = supervisorEmail.trim().toLowerCase();
-    const pin = supervisorPin.trim();
-    const isPinMode = /^[0-9]{4}$/.test(pin);
     const brandId = String(user?.brand_id ?? '').trim();
     if (!brandId) {
       setTillSetupError('Missing brand context. Please sign in again.');
       return;
     }
-    if (!pin) {
-      setTillSetupError('Enter supervisor PIN or admin password.');
-      return;
-    }
-    if (!isPinMode && !email) {
-      setTillSetupError('Enter admin email to use password verification.');
+    if (!email) {
+      setTillSetupError('Enter admin email.');
       setAvailableTills([]);
       return;
     }
     setTillSetupBusy(true);
     setTillSetupError(null);
     try {
-      let data: any = null;
-      let error: any = null;
-
-      if (isPinMode) {
-        const result = await supabase.rpc('list_tills_for_brand_supervisor_pin', {
-          p_brand_id: brandId,
-          p_pin: pin,
-        });
-        data = result.data;
-        error = result.error;
-      } else {
-        const authClient = createEphemeralSupabaseClient();
-        if (!authClient) {
-          setTillSetupError('Supabase not configured.');
-          setAvailableTills([]);
-          return;
-        }
-        const loginRes = await authClient.auth.signInWithPassword({ email, password: pin });
-        if (loginRes.error || !(loginRes.data as any)?.user?.id) {
-          setTillSetupError('Invalid admin email/password.');
-          setAvailableTills([]);
-          return;
-        }
-        const result = await authClient.rpc('list_tills_for_staff', { p_email: email, p_pin: pin });
-        data = result.data;
-        error = result.error;
-        await authClient.auth.signOut();
-      }
+      const { data, error } = await supabase.rpc('list_tills_for_brand_admin_email', {
+        p_brand_id: brandId,
+        p_admin_email: email,
+      });
 
       if (error) {
         setTillSetupError(String((error as any)?.message ?? 'Unable to load tills'));
@@ -425,7 +449,7 @@ export default function POSTerminal() {
       }));
       setAvailableTills(tills);
       if (!tills.length) {
-        setTillSetupError('Invalid supervisor PIN or no active tills found for this brand.');
+        setTillSetupError('Admin email not allowed for this brand or no active tills found.');
       }
       if (!selectedTillId && tills.length) setSelectedTillId(tills[0].id);
     } catch (e: any) {
@@ -439,12 +463,10 @@ export default function POSTerminal() {
   useEffect(() => {
     if (!showTillSetup) return;
     const email = supervisorEmail.trim().toLowerCase();
-    const secret = supervisorPin.trim();
     const brandId = String(user?.brand_id ?? '').trim();
-    if (!brandId || !secret) return;
-    if (!/^[0-9]{4}$/.test(secret) && !email) return;
+    if (!brandId || !email) return;
 
-    const autoLoadKey = `${brandId}|${email}|${secret}`;
+    const autoLoadKey = `${brandId}|${email}`;
     if (lastTillAutoLoadKeyRef.current === autoLoadKey) return;
 
     if (tillAutoLoadTimerRef.current != null) {
@@ -464,24 +486,18 @@ export default function POSTerminal() {
     };
     // Intentionally omit loadTillsForSupervisor to avoid recreating the debounce on each render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showTillSetup, supervisorEmail, supervisorPin, user?.brand_id]);
+  }, [showTillSetup, supervisorEmail, user?.brand_id]);
 
   const assignTillToThisDevice = async () => {
     if (!supabase) return;
     const email = supervisorEmail.trim().toLowerCase();
-    const pin = supervisorPin.trim();
-    const isPinMode = /^[0-9]{4}$/.test(pin);
     const brandId = String(user?.brand_id ?? '').trim();
     if (!brandId) {
       setTillSetupError('Missing brand context. Please sign in again.');
       return;
     }
-    if (!pin) {
-      setTillSetupError('Enter supervisor PIN or admin password.');
-      return;
-    }
-    if (!isPinMode && !email) {
-      setTillSetupError('Enter admin email to use password verification.');
+    if (!email) {
+      setTillSetupError('Enter admin email.');
       return;
     }
     if (!selectedTillId) {
@@ -491,39 +507,12 @@ export default function POSTerminal() {
     setTillSetupBusy(true);
     setTillSetupError(null);
     try {
-      let data: any = null;
-      let error: any = null;
-
-      if (isPinMode) {
-        const result = await supabase.rpc('assign_pos_device_to_till_by_brand_supervisor_pin', {
-          p_brand_id: brandId,
-          p_pin: pin,
-          p_device_id: deviceId,
-          p_till_id: selectedTillId,
-        });
-        data = result.data;
-        error = result.error;
-      } else {
-        const authClient = createEphemeralSupabaseClient();
-        if (!authClient) {
-          setTillSetupError('Supabase not configured.');
-          return;
-        }
-        const loginRes = await authClient.auth.signInWithPassword({ email, password: pin });
-        if (loginRes.error || !(loginRes.data as any)?.user?.id) {
-          setTillSetupError('Invalid admin email/password.');
-          return;
-        }
-        const result = await authClient.rpc('assign_pos_device_to_till', {
-          p_email: email,
-          p_pin: pin,
-          p_device_id: deviceId,
-          p_till_id: selectedTillId,
-        });
-        data = result.data;
-        error = result.error;
-        await authClient.auth.signOut();
-      }
+      const { data, error } = await supabase.rpc('assign_pos_device_to_till_by_brand_admin_email', {
+        p_brand_id: brandId,
+        p_admin_email: email,
+        p_device_id: deviceId,
+        p_till_id: selectedTillId,
+      });
 
       if (error) {
         setTillSetupError(String((error as any)?.message ?? 'Unable to assign till'));
@@ -531,7 +520,17 @@ export default function POSTerminal() {
       }
       const ok = Boolean((data as any)?.ok ?? false);
       if (!ok) {
-        setTillSetupError(String((data as any)?.error ?? 'Unable to assign till'));
+        const reason = String((data as any)?.error ?? '');
+        const assignedDevice = String((data as any)?.assigned_device_id ?? '').trim();
+        if (reason === 'till_already_assigned') {
+          setTillSetupError(
+            assignedDevice
+              ? `This till is already assigned to device ${assignedDevice}. Unassign it first to keep one-to-one control.`
+              : 'This till is already assigned to another device. Unassign it first to keep one-to-one control.'
+          );
+        } else {
+          setTillSetupError(reason || 'Unable to assign till');
+        }
         return;
       }
       allowTillSetupCloseRef.current = true;
@@ -543,6 +542,33 @@ export default function POSTerminal() {
     } finally {
       setTillSetupBusy(false);
     }
+  };
+
+  const openIncomingOrder = (incoming: { id: string; orderNo: number; tableNo?: number; createdAt: string }) => {
+    const incomingId = String(incoming.id ?? '').trim();
+    const full = findOrderById(incomingId);
+    if (full) loadOrderToTerminal(full);
+    if (supabase) {
+      void (async () => {
+        try {
+          await supabase.rpc('tablet_mark_order_seen', { p_order_id: incomingId });
+        } catch {
+          // non-blocking: UI should still clear incoming card even if seen marker fails
+        }
+      })();
+    }
+    // Opening an incoming order counts as attending it: remove from queue and close modal.
+    setIncomingOrders((prev) =>
+      prev.filter((x) => {
+        const sameId = String(x.id ?? '').trim().toLowerCase() === incomingId.toLowerCase();
+        const sameFallback =
+          Number(x.orderNo) === Number(incoming.orderNo) &&
+          Number(x.tableNo ?? -1) === Number(incoming.tableNo ?? -1) &&
+          String(x.createdAt ?? '') === String(incoming.createdAt ?? '');
+        return !(sameId || sameFallback);
+      })
+    );
+    setShowIncomingOrders(false);
   };
 
   const endShift = async (amount: number) => {
@@ -720,11 +746,13 @@ export default function POSTerminal() {
   const [showCoupon, setShowCoupon] = useState(false);
 
   const paymentRequests = useSyncExternalStore(subscribePosPaymentRequests, getPosPaymentRequestsSnapshot);
-  const posNotifs = useSyncExternalStore(subscribePosNotifications, getPosNotificationsSnapshot);
   const prevRequestIds = useRef<string>('');
   const prevNotifIds = useRef<string>('');
+  const prevIncomingIds = useRef<string>('');
   const [showSlide, setShowSlide] = useState(false);
   const slideTimerRef = useRef<number | null>(null);
+  const [slidePayload, setSlidePayload] = useState<{ title: string; body: string; openTarget: 'notifications' | 'incoming' } | null>(null);
+  const [lastTabletChannelActivityAt, setLastTabletChannelActivityAt] = useState<number>(Date.now());
 
   const computeLineTotal = (unitPrice: number, qty: number, discountPercent?: number) => {
     const d = Math.min(100, Math.max(0, discountPercent ?? 0));
@@ -776,6 +804,16 @@ export default function POSTerminal() {
   }, [location.key, orders]);
 
   useEffect(() => {
+    if (incomingOrders.length > 0 || incomingCalls.length > 0) setLastTabletChannelActivityAt(Date.now());
+  }, [incomingOrders.length, incomingCalls.length]);
+
+  useEffect(() => {
+    if (posNotifs.some((n) => String(n.type ?? '') === 'waiter_call')) {
+      setLastTabletChannelActivityAt(Date.now());
+    }
+  }, [posNotifs]);
+
+  useEffect(() => {
     const ids = paymentRequests.map((r) => r.id).join('|');
     prevRequestIds.current = ids;
   }, [paymentRequests]);
@@ -786,16 +824,44 @@ export default function POSTerminal() {
       const prevSet = new Set(prevNotifIds.current.split('|').filter(Boolean));
       for (const n of posNotifs) {
         if (!prevSet.has(n.id)) {
+          if (n.type === 'waiter_call' && !seenIncomingCallNotifIdsRef.current.has(n.id)) {
+            seenIncomingCallNotifIdsRef.current.add(n.id);
+            setIncomingCalls((prev) => [
+              {
+                id: String(n.id),
+                tableNo: n.payload?.tableNo != null ? Number(n.payload.tableNo) : undefined,
+                tableLabel: n.payload?.tableLabel != null ? String(n.payload.tableLabel) : undefined,
+                createdAt: String(n.created_at ?? new Date().toISOString()),
+              },
+              ...prev,
+            ].slice(0, 50));
+          }
           try {
-            toast({ title: 'Order Ready', description: `Order #${n.payload?.orderNo}${n.payload?.tableNo ? ` • Table ${n.payload.tableNo}` : ''}` });
+            if (n.type === 'waiter_call') {
+              toast({
+                title: 'Waiter call',
+                description: `${n.payload?.tableLabel ?? (n.payload?.tableNo ? `Table ${n.payload.tableNo}` : 'A table')} is requesting service.`,
+              });
+            } else {
+              toast({ title: 'Order Ready', description: `Order #${n.payload?.orderNo}${n.payload?.tableNo ? ` • Table ${n.payload.tableNo}` : ''}` });
+            }
           } catch {
             // ignore
           }
-          // Open slide-down panel and play sound to attract attention
+          // Non-destructive slide banner from bottom with quick-open action.
           try {
+            const body =
+              n.type === 'waiter_call'
+                ? `${n.payload?.tableLabel ?? (n.payload?.tableNo ? `Table ${n.payload.tableNo}` : 'A table')} calls for waiter`
+                : `Order #${n.payload?.orderNo}${n.payload?.tableNo ? ` • Table ${n.payload.tableNo}` : ''}`;
+            setSlidePayload({
+              title: n.type === 'waiter_call' ? 'Waiter Call' : 'Order Ready',
+              body,
+              openTarget: n.type === 'waiter_call' ? 'incoming' : 'notifications',
+            });
             setShowSlide(true);
             if (slideTimerRef.current) window.clearTimeout(slideTimerRef.current as any);
-            slideTimerRef.current = window.setTimeout(() => setShowSlide(false), 8000);
+            slideTimerRef.current = window.setTimeout(() => setShowSlide(false), 6500);
           } catch {}
           try { playNotificationTone(); } catch {}
         }
@@ -803,6 +869,29 @@ export default function POSTerminal() {
     }
     prevNotifIds.current = ids;
   }, [posNotifs, toast]);
+
+  useEffect(() => {
+    const ids = incomingOrders.map((o) => o.id).join('|');
+    if (ids !== prevIncomingIds.current) {
+      const prevSet = new Set(prevIncomingIds.current.split('|').filter(Boolean));
+      for (const o of incomingOrders) {
+        if (!prevSet.has(o.id)) {
+          try {
+            setSlidePayload({
+              title: 'Incoming Tablet Order',
+              body: `Order #${o.orderNo}${o.tableNo ? ` • ${o.tableLabel ?? `Table ${o.tableNo}`}` : ''}`,
+              openTarget: 'incoming',
+            });
+            setShowSlide(true);
+            if (slideTimerRef.current) window.clearTimeout(slideTimerRef.current as any);
+            slideTimerRef.current = window.setTimeout(() => setShowSlide(false), 6500);
+          } catch {}
+          break;
+        }
+      }
+    }
+    prevIncomingIds.current = ids;
+  }, [incomingOrders]);
 
   useEffect(() => {
     if (!showSessionReceipts) return;
@@ -874,40 +963,11 @@ export default function POSTerminal() {
     } catch {}
   }
 
-  const popularItems = useMemo(() => {
-    // Local "AI" suggestion: top-selling items from paid orders.
-    const counts = new Map<string, { item: POSMenuItem; qty: number }>();
-    const byId = new Map(items.map((i) => [i.id, i] as const));
-    for (const o of orders) {
-      if (o.status !== 'paid') continue;
-      for (const it of o.items) {
-        const mi = byId.get(it.menuItemId);
-        if (!mi) continue;
-        const prev = counts.get(mi.id);
-        const qty = Number.isFinite(it.quantity) ? it.quantity : 0;
-        counts.set(mi.id, { item: mi, qty: (prev?.qty ?? 0) + qty });
-      }
-    }
-    return Array.from(counts.values())
-      .sort((a, b) => b.qty - a.qty)
-      .slice(0, 10)
-      .map((x) => x.item);
-  }, [orders, items]);
-  
-  const smartMatches = useMemo(() => {
-    const { query } = parseSmartQuantityQuery(searchQuery);
-    return smartSearchMenuItems({ query, items: items.filter((i) => i.isAvailable), limit: 30 });
-  }, [items, searchQuery]);
-
   const filteredItems = useMemo(() => {
-    if (searchQuery.trim()) {
-      return smartMatches;
-    }
-
     const base = items.filter((i) => i.isAvailable);
     if (selectedCategory === ALL_CATEGORY_ID) return base;
     return base.filter((item) => item.categoryId === selectedCategory);
-  }, [items, selectedCategory, searchQuery, smartMatches]);
+  }, [items, selectedCategory]);
 
   const stockMaps = useMemo(() => {
     const saleByItemId = new Map<string, { qty: number; reorder: number }>();
@@ -1128,23 +1188,31 @@ export default function POSTerminal() {
     setOrderItems([...orderItems, newItem]);
   };
 
-  // Slide-down notification UI (renders near top of the page)
+  // Non-destructive bottom slide notification UI.
   const SlideNotification = () => {
-    if (!showSlide || posNotifs.length === 0) return null;
-    const n = posNotifs[0];
+    if (!showSlide || !slidePayload) return null;
     return (
       <div className={cn(
-        'fixed left-1/2 transform -translate-x-1/2 top-4 z-50 transition-transform duration-300',
-        showSlide ? 'translate-y-0' : '-translate-y-20'
+        'fixed left-1/2 transform -translate-x-1/2 bottom-4 z-50 transition-all duration-300',
+        showSlide ? 'translate-y-0 opacity-100 animate-in fade-in-0 slide-in-from-bottom-3 duration-300' : 'translate-y-8 opacity-0'
       )}>
-        <div className="max-w-lg w-[min(95vw,480px)] bg-white border shadow-lg rounded-md p-4 flex items-start gap-3">
+        <div className="max-w-lg w-[min(95vw,520px)] bg-white border shadow-lg rounded-md p-4 flex items-start gap-3">
           <div className="flex-1">
-            <div className="font-medium">Order Ready</div>
-            <div className="text-sm text-slate-600">Order #{n.payload?.orderNo}{n.payload?.tableNo ? ` • Table ${n.payload.tableNo}` : ''}</div>
+            <div className="font-medium">{slidePayload.title}</div>
+            <div className="text-sm text-slate-600">{slidePayload.body}</div>
           </div>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="outline" onClick={() => { setShowSlide(false); }}>Dismiss</Button>
-            <Button size="sm" onClick={() => { setShowNotifications(true); setShowSlide(false); }}>Open</Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                if (slidePayload.openTarget === 'incoming') setShowIncomingOrders(true);
+                else setShowNotifications(true);
+                setShowSlide(false);
+              }}
+            >
+              Open
+            </Button>
           </div>
         </div>
       </div>
@@ -1246,8 +1314,6 @@ export default function POSTerminal() {
     setOrderItems((order.items ?? []).map((it) => ({ ...it })));
     setOrderDiscountPercent(Number(order.discountPercent ?? 0));
     setSelectedOrderItemId(null);
-    setSearchQuery('');
-    setSearchOpen(false);
     if (opts?.openPayment) setShowPayment(true);
   };
 
@@ -1596,6 +1662,7 @@ export default function POSTerminal() {
   
   return (
     <div className="h-screen p-3 pos-light">
+      <SlideNotification />
       <AlertDialog open={showPostShiftActions} onOpenChange={setShowPostShiftActions}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1630,7 +1697,6 @@ export default function POSTerminal() {
             setAvailableTills([]);
             setSelectedTillId('');
             setSupervisorEmail('');
-            setSupervisorPin('');
             lastTillAutoLoadKeyRef.current = '';
             allowTillSetupCloseRef.current = false;
             if (tillAutoLoadTimerRef.current != null) {
@@ -1660,7 +1726,7 @@ export default function POSTerminal() {
 
             <div className="grid gap-2">
               <div className="grid gap-1">
-                <div className="text-xs text-muted-foreground">Admin email (only for password mode)</div>
+                <div className="text-xs text-muted-foreground">Admin email</div>
                 <Input
                   value={supervisorEmail}
                   onChange={(e) => setSupervisorEmail(e.target.value)}
@@ -1668,16 +1734,7 @@ export default function POSTerminal() {
                   autoComplete="username"
                 />
               </div>
-              <div className="grid gap-1">
-                <div className="text-xs text-muted-foreground">Supervisor PIN or admin password</div>
-                <Input
-                  value={supervisorPin}
-                  onChange={(e) => setSupervisorPin(e.target.value)}
-                  placeholder="4-digit PIN or password"
-                  type="password"
-                  autoComplete="current-password"
-                />
-              </div>
+              <div className="text-xs text-muted-foreground">Enter admin email to load available tills for this brand.</div>
               <div className="flex gap-2">
                 <Button variant="outline" onClick={loadTillsForSupervisor} disabled={tillSetupBusy}>
                   Load tills
@@ -1715,7 +1772,7 @@ export default function POSTerminal() {
       </Dialog>
 
       <div className="h-full rounded-2xl border bg-background overflow-auto lg:overflow-hidden overscroll-contain">
-        <div className="h-full grid grid-cols-1 md:grid-cols-[4.5rem_1fr] lg:grid-cols-[4.5rem_1fr_22rem] xl:grid-cols-[4.5rem_1fr_26rem]">
+        <div className="h-full grid grid-cols-1 lg:grid-cols-[4.5rem_minmax(0,1fr)_minmax(18rem,22rem)] xl:grid-cols-[4.5rem_minmax(0,1fr)_minmax(20rem,25rem)]">
           {/* Left icon rail (POS-like) */}
           <div className="hidden lg:flex flex-col items-center border-r bg-muted/30 py-3">
             <div className="w-12 h-12 rounded-xl border bg-background flex items-center justify-center font-bold">
@@ -1768,6 +1825,24 @@ export default function POSTerminal() {
               >
                 <SettingsIcon className="h-5 w-5" />
               </Button>
+              <Button
+                variant="ghost"
+                className="mt-2 h-11 w-full justify-center"
+                title="Logout / End shift"
+                onClick={() => {
+                  if (isCashier && activeShiftId) {
+                    setShiftError(null);
+                    setClosingCash('');
+                    setCashierPin('');
+                    setConfirmEndShift(false);
+                    setShowEndShift(true);
+                    return;
+                  }
+                  requestLogout();
+                }}
+              >
+                <LogOut className="h-5 w-5" />
+              </Button>
             </div>
           </div>
 
@@ -1775,7 +1850,7 @@ export default function POSTerminal() {
           <div className="flex flex-col min-w-0">
             {/* Debug panel removed */}
             {/* Top bar */}
-            <div className="flex items-center justify-between gap-3 border-b p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b p-2.5 lg:p-3">
               <div className="hidden sm:block">
                 <div className="font-semibold">{settings.appName}</div>
                 {activeTill?.id ? (
@@ -1784,137 +1859,55 @@ export default function POSTerminal() {
                   </div>
                 ) : null}
               </div>
-              <div className="flex-1 max-w-xl">
-                <Popover open={searchOpen} onOpenChange={setSearchOpen}>
-                  <PopoverTrigger asChild>
-                    <Input
-                      placeholder="Search products… (try: 2x coke, 1002 bread)"
-                      value={searchQuery}
-                      onChange={(e) => {
-                        setSearchQuery(e.target.value);
-                        if (!searchOpen) setSearchOpen(true);
-                      }}
-                      onFocus={() => setSearchOpen(true)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Escape') {
-                          setSearchOpen(false);
-                          return;
-                        }
-                        if (e.key === 'Enter') {
-                          const { qty, query } = parseSmartQuantityQuery(searchQuery);
-                          const match = smartSearchMenuItems({ query, items: items.filter((i) => i.isAvailable), limit: 1 })[0];
-                          if (match) {
-                            e.preventDefault();
-                            addItemWithQty(match, qty ?? 1);
-                            setSearchQuery('');
-                            setSearchOpen(false);
-                          }
-                        }
-                      }}
-                    />
-                  </PopoverTrigger>
-                  <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
-                    <Command>
-                      <CommandList>
-                        {!searchQuery.trim() ? (
-                          <>
-                            <CommandGroup heading="Popular (auto)">
-                              {popularItems.slice(0, 8).map((it) => (
-                                <CommandItem
-                                  key={it.id}
-                                  value={`${it.name} ${it.code}`}
-                                  onSelect={() => {
-                                    addItem(it);
-                                    setSearchOpen(false);
-                                  }}
-                                >
-                                  <span className="truncate">{it.name}</span>
-                                  <span className="ml-2 text-xs text-muted-foreground truncate">{it.code}</span>
-                                </CommandItem>
-                              ))}
-                              {!popularItems.length && (
-                                <div className="px-2 py-3 text-xs text-muted-foreground">No sales history yet.</div>
-                              )}
-                            </CommandGroup>
-                            <CommandGroup heading="Tip">
-                              <div className="px-2 py-3 text-xs text-muted-foreground">
-                                Start typing to search. Press <span className="font-medium">Enter</span> to add the top match.
-                              </div>
-                            </CommandGroup>
-                          </>
-                        ) : smartMatches.length ? (
-                          <CommandGroup heading="Matches">
-                            {smartMatches.map((it) => (
-                              <CommandItem
-                                key={it.id}
-                                value={`${it.name} ${it.code}`}
-                                onSelect={() => {
-                                  const { qty } = parseSmartQuantityQuery(searchQuery);
-                                  addItemWithQty(it, qty ?? 1);
-                                  setSearchQuery('');
-                                  setSearchOpen(false);
-                                }}
-                              >
-                                <span className="truncate">{it.name}</span>
-                                <span className="ml-2 text-xs text-muted-foreground truncate">{it.code}</span>
-                              </CommandItem>
-                            ))}
-                          </CommandGroup>
-                        ) : (
-                          <CommandEmpty>No matching menu items.</CommandEmpty>
-                        )}
-                      </CommandList>
-                    </Command>
-                  </PopoverContent>
-                </Popover>
-              </div>
-              <div className="flex items-center gap-1 sm:gap-2">
-                <Button
+              <div className="flex-1 min-w-[80px]" />
+              <div className="flex flex-wrap items-center justify-end gap-1.5 sm:gap-2">
+                <Badge
                   variant="outline"
-                  className="h-10 w-10 sm:h-auto sm:w-auto"
-                  title="Logout"
-                  onClick={() => {
-                    if (isCashier && activeShiftId) {
-                      setShiftError(null);
-                      setClosingCash('');
-                      setCashierPin('');
-                      setConfirmEndShift(false);
-                      setShowEndShift(true);
-                      return;
-                    }
-
-                    void (async () => {
-                      await logout();
-                      navigate('/');
-                    })();
-                  }}
+                  className={cn(
+                    'hidden md:inline-flex',
+                    isOnline && Date.now() - lastTabletChannelActivityAt < 1000 * 60 * 5
+                      ? 'border-emerald-500/40 text-emerald-600'
+                      : 'border-amber-500/40 text-amber-600'
+                  )}
+                  title="Realtime channel health for tablet calls/orders"
                 >
-                  <LogOut className="h-4 w-4" />
-                  <span className="hidden xl:inline ml-2">Logout</span>
-                </Button>
-                <Button variant="outline" size="icon" title="Refresh" onClick={() => window.location.reload()}>
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
-                <Button variant="outline" size="icon" title={isOnline ? 'Online' : 'Offline'}>
-                  <Wifi className={cn('h-4 w-4', isOnline ? 'text-emerald-500' : 'text-muted-foreground')} />
-                </Button>
+                  Tablet {isOnline && Date.now() - lastTabletChannelActivityAt < 1000 * 60 * 5 ? 'Live' : 'Syncing'}
+                </Badge>
 
                 <Button
                   variant="outline"
-                  className="relative"
+                  className="relative px-2.5 sm:px-3"
                   title="Requests"
                   onClick={() => setShowNotifications(true)}
                 >
                   <BellRing className="h-4 w-4" />
                   <span className="hidden lg:inline ml-2">Requests</span>
-                  {posNotifs.length > 0 ? (
+                  {requestNotifs.length > 0 ? (
                     <span className="ml-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1 text-xs font-bold text-destructive-foreground">
-                      {posNotifs.length}
+                      {requestNotifs.length}
                     </span>
                   ) : null}
-                  {paymentRequests.length > 0 && posNotifs.length === 0 ? (
+                  {paymentRequests.length > 0 && requestNotifs.length === 0 ? (
                     <span className="ml-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1 text-xs font-bold text-destructive-foreground">
                       {paymentRequests.length}
+                    </span>
+                  ) : null}
+                </Button>
+
+                <Button
+                  variant={incomingOrders.length + incomingCalls.length > 0 ? 'default' : 'outline'}
+                  className={cn('relative px-2.5 sm:px-3', incomingOrders.length + incomingCalls.length > 0 ? 'animate-[pulse_1.15s_ease-in-out_infinite]' : '')}
+                  title="Incoming tablet orders"
+                  onClick={() => setShowIncomingOrders(true)}
+                >
+                  <Receipt className="h-4 w-4" />
+                  <span className="hidden lg:inline ml-2">Incoming</span>
+                  {incomingOrders.length + incomingCalls.length > 0 ? (
+                    <span className="absolute -top-1 -right-1 inline-flex h-3 w-3 rounded-full bg-sky-500 animate-ping" />
+                  ) : null}
+                  {incomingOrders.length + incomingCalls.length > 0 ? (
+                    <span className="ml-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-sky-600 px-1 text-xs font-bold text-white animate-pulse">
+                      {incomingOrders.length + incomingCalls.length}
                     </span>
                   ) : null}
                 </Button>
@@ -1922,13 +1915,18 @@ export default function POSTerminal() {
                 <Dialog open={showNotifications} onOpenChange={setShowNotifications}>
                   <DialogContent className="max-w-md">
                     <div className="space-y-2">
-                      <div className="font-medium">Notifications</div>
-                      {posNotifs.length === 0 ? (
+                      <div className="font-medium">Requests</div>
+                      {requestNotifs.length === 0 ? (
                         <div className="text-sm text-muted-foreground">No new notifications</div>
                       ) : (
-                        posNotifs.map((n) => (
+                        requestNotifs.map((n) => (
                           <div key={n.id} className="flex items-start justify-between gap-2">
-                            <div className="text-sm">Order #{n.payload?.orderNo}{n.payload?.tableNo ? ` • Table ${n.payload.tableNo}` : ''}</div>
+                            <div className="text-sm">
+                              <span>
+                                Order #{n.payload?.orderNo}
+                                {n.payload?.tableNo ? ` • Table ${n.payload.tableNo}` : ''}
+                              </span>
+                            </div>
                             <div className="flex items-center gap-2">
                               <div className="text-xs text-muted-foreground">{new Date(n.created_at).toLocaleTimeString()}</div>
                               <Button
@@ -1952,19 +1950,90 @@ export default function POSTerminal() {
                   </DialogContent>
                 </Dialog>
 
-                <Button variant="outline" className="relative" onClick={() => setShowHeldOrders(true)} title="Resume held orders">
+                <Dialog open={showIncomingOrders} onOpenChange={setShowIncomingOrders}>
+                  <DialogContent className="max-w-md">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-medium">Incoming Orders</div>
+                        {incomingOrders.length || incomingCalls.length ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setIncomingOrders([]);
+                              setIncomingCalls([]);
+                            }}
+                          >
+                            Clear
+                          </Button>
+                        ) : null}
+                      </div>
+                      {incomingOrders.length === 0 && incomingCalls.length === 0 ? (
+                        <div className="text-sm text-muted-foreground">No new tablet orders.</div>
+                      ) : (
+                        <div className="space-y-2">
+                          {incomingCalls.slice(0, 25).map((c) => (
+                            <Card key={`call-${c.id}`} className="p-3 border-amber-500/30 bg-amber-500/5">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="font-semibold">
+                                    Waiter call • {c.tableLabel ?? (c.tableNo ? `Table ${c.tableNo}` : 'Table')}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {new Date(c.createdAt).toLocaleTimeString()}
+                                  </div>
+                                </div>
+                                <div className="flex flex-col gap-2">
+                                  <Button
+                                    size="sm"
+                                    onClick={() => {
+                                      setIncomingCalls((prev) => prev.filter((x) => x.id !== c.id));
+                                      setShowIncomingOrders(false);
+                                    }}
+                                  >
+                                    Open
+                                  </Button>
+                                </div>
+                              </div>
+                            </Card>
+                          ))}
+                          {incomingOrders.slice(0, 25).map((o) => (
+                            <Card key={o.id} className="p-3">
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="font-semibold">
+                                    Order #{o.orderNo}{o.tableNo ? ` • ${o.tableLabel ?? `Table ${o.tableNo}`}` : ''}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    Tablet • {new Date(o.createdAt).toLocaleTimeString()}
+                                  </div>
+                                  <div className="text-sm mt-1">
+                                    Total: <span className="font-mono">{formatMoneyPrecise(Number(o.total ?? 0), 2)}</span>
+                                  </div>
+                                </div>
+                                <div className="flex flex-col gap-2">
+                                  <Button
+                                    size="sm"
+                                    onClick={() => openIncomingOrder(o)}
+                                  >
+                                    Open
+                                  </Button>
+                                </div>
+                              </div>
+                            </Card>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </DialogContent>
+                </Dialog>
+
+                <Button variant="outline" className="relative px-2.5 sm:px-3" onClick={() => setShowHeldOrders(true)} title="Resume held orders">
                   <FolderOpen className="h-4 w-4" />
                   <span className="hidden lg:inline ml-2">Held</span>
                 </Button>
 
-                {/* Table picker */}
                 <Dialog open={showTableSelect} onOpenChange={setShowTableSelect}>
-                  <DialogTrigger asChild>
-                    <Button className="h-10 min-w-[110px] text-xs sm:text-sm" variant="default">
-                      <span className="hidden sm:inline">Select Table</span>
-                      <span className="inline sm:hidden">Table</span>
-                    </Button>
-                  </DialogTrigger>
                   <DialogContent className="max-w-md">
                     <DialogHeader>
                       <DialogTitle>Select Table</DialogTitle>
@@ -2266,7 +2335,6 @@ export default function POSTerminal() {
                   value={selectedCategory}
                   onValueChange={(value) => {
                     setSelectedCategory(value);
-                    setSearchQuery('');
                   }}
                 >
                   <SelectTrigger className="min-w-[150px]">
@@ -2329,13 +2397,13 @@ export default function POSTerminal() {
           </div>
 
           {/* Right: Cart */}
-          <div className="border-l bg-muted/20 flex flex-col min-h-0 w-full max-w-full lg:max-w-[22rem] xl:max-w-[26rem]">
+          <div className="border-t lg:border-t-0 lg:border-l bg-muted/20 flex flex-col min-h-0 min-w-0 w-full max-w-full lg:w-[min(34vw,22rem)] xl:w-[min(30vw,25rem)]">
         {/* Order Header */}
-        <div className="p-3 border-b bg-background/50">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
+        <div className="p-2.5 lg:p-3 border-b bg-background/50">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <div className="flex items-center gap-2 min-w-0">
               <ShoppingCart className="h-5 w-5" />
-              <span className="font-semibold">Current Order</span>
+              <span className="font-semibold truncate">Current Order</span>
               {orderItems.length > 0 && (
                 <Badge variant="secondary">{orderTotals.itemCount} items</Badge>
               )}
@@ -2347,19 +2415,33 @@ export default function POSTerminal() {
             )}
           </div>
 
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <div className="text-xs text-muted-foreground">
               {orderType === 'eat_in' ? (selectedTable ? `Table ${selectedTable}` : 'No table') : orderType.replace('_', ' ')}
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setOrderType(orderType === 'eat_in' ? 'take_out' : 'eat_in')}
-              title="Toggle Eat-in / Take-out"
-            >
-              <Users className="h-4 w-4 mr-2" />
-              {orderType === 'eat_in' ? 'Eat In' : 'Take Out'}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={() => setShowTableSelect(true)}
+                title="Select table"
+              >
+                <span className="hidden sm:inline">{selectedTable ? `Table ${selectedTable}` : 'Select Table'}</span>
+                <span className="inline sm:hidden">Table</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={() => setOrderType(orderType === 'eat_in' ? 'take_out' : 'eat_in')}
+                title="Toggle Eat-in / Take-out"
+              >
+                <Users className="h-4 w-4 mr-2" />
+                <span className="hidden sm:inline">{orderType === 'eat_in' ? 'Eat In' : 'Take Out'}</span>
+                <span className="inline sm:hidden">{orderType === 'eat_in' ? 'In' : 'Out'}</span>
+              </Button>
+            </div>
           </div>
         </div>
         
@@ -2716,8 +2798,9 @@ export default function POSTerminal() {
                   <Card key={o.id} className={cn('p-3', activeOrderId === o.id ? 'border-primary' : '')}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <div className="font-semibold">
-                          Order #{o.orderNo}{o.tableNo ? ` • Table ${o.tableNo}` : ''}
+                        <div className="flex items-center gap-2 font-semibold">
+                          <span>Order #{o.orderNo}{o.tableNo ? ` • Table ${o.tableNo}` : ''}</span>
+                          {o.source === 'tablet' ? <Badge variant="secondary">Tablet</Badge> : null}
                         </div>
                         <div className="text-xs text-muted-foreground">
                           {o.staffName} • {new Date(o.createdAt).toLocaleString()}

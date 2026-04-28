@@ -84,7 +84,8 @@ function setupRealtime() {
   if (!brandId) return;
   try {
     const channel = supabase.channel(LISTEN_CHANNEL + '.' + brandId);
-    const filt = `brand_id=eq.${brandId},type=eq.order_ready`;
+    // Listen to multiple request types (kitchen ready + customer tablet calls).
+    const filt = `brand_id=eq.${brandId}`;
     channel.on('postgres_changes', { event: '*', schema: 'public', table: 'pos_notifications', filter: filt }, (payload) => {
       try {
         const newRow = (payload?.new ?? payload?.record) as any;

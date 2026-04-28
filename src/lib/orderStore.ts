@@ -1,4 +1,4 @@
-import type { Order, OrderItem, OrderType, PaymentMethod } from '@/types/pos';
+import type { Order, OrderItem, OrderType, PaymentMethod, OrderSource, OrderStatus } from '@/types/pos';
 import { enqueueOrder } from '@/lib/offlineOrderQueue';
 import { flushQueuedOrders } from '@/lib/offlineOrderQueue';
 import { isSupabaseConfigured, supabase } from '@/lib/supabaseClient';
@@ -94,6 +94,7 @@ async function sendOrderToSupabase(order: Order) {
     created_at: order.createdAt,
     sent_at: order.sentAt ?? null,
     paid_at: order.paidAt ?? null,
+    source: order.source ?? 'pos',
   };
 
   const receiptPayload = {
@@ -384,6 +385,7 @@ export function addOrder(params: {
   grossProfit: number;
   gpPercent: number;
   status: Order['status'];
+  source?: OrderSource;
   paymentMethod?: PaymentMethod;
 }): Order {
   const state = getState();
@@ -391,6 +393,7 @@ export function addOrder(params: {
   const order: Order = {
     id: `ord-${Date.now()}`,
     orderNo: nextOrderNo(state.orders),
+    source: params.source ?? 'pos',
     tableId: params.tableNo ? `t${params.tableNo}` : undefined,
     tableNo: params.tableNo ?? undefined,
     orderType: params.orderType,
@@ -832,6 +835,7 @@ export async function fetchAndReplaceOrdersFromSupabase() {
       const orderNorm: Order = {
         id: String(orderRow.id),
         orderNo: Number(orderRow.order_no) || 0,
+        source: (orderRow.source as OrderSource | null) ?? 'pos',
         tableId: orderRow.table_no ? `t${orderRow.table_no}` : undefined,
         tableNo: orderRow.table_no ?? undefined,
         orderType: orderRow.order_type as OrderType,

@@ -1,12 +1,10 @@
-import { useMemo, useState, useSyncExternalStore } from 'react';
-import { Users, Clock, DollarSign, MoreVertical, ArrowRightLeft, Trash2, Eye, BellRing } from 'lucide-react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { Users, Clock, DollarSign, BellRing } from 'lucide-react';
 import { PageHeader } from '@/components/common/PageComponents';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { tableSections } from '@/data/posData';
 import { Table as TableType, TableStatus } from '@/types/pos';
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
@@ -14,6 +12,11 @@ import { InteractiveFloorPlan, type FloorPlanTable } from '@/components/pos/Inte
 import { getOrdersSnapshot, subscribeOrders } from '@/lib/orderStore';
 import { addPosPaymentRequest, getPosPaymentRequestsSnapshot, subscribePosPaymentRequests } from '@/lib/posPaymentRequestStore';
 import { useCurrency } from '@/contexts/CurrencyContext';
+import { useRestaurantTables } from '@/hooks/useRestaurantTables';
+import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/lib/supabaseClient';
+import { Input } from '@/components/ui/input';
+import { refreshRestaurantTables } from '@/lib/restaurantTablesStore';
 
 const STATUS_COLORS: Record<TableStatus, string> = {
   available: 'bg-green-500/20 border-green-500 text-green-700 dark:text-green-400',
@@ -32,10 +35,41 @@ const STATUS_LABELS: Record<TableStatus, string> = {
 export default function TableManagement() {
   const navigate = useNavigate();
   const { formatMoneyPrecise } = useCurrency();
+  const { hasPermission, user, brand } = useAuth();
+  const brandId = String((brand as any)?.id ?? (user as any)?.brand_id ?? '');
+  const canConfigure = hasPermission('manageSettings');
+  const role = String((user as any)?.role ?? '').toLowerCase();
+  const canTabletSetup = canConfigure || role === 'front_supervisor' || role === 'manager';
   const [selectedTable, setSelectedTable] = useState<TableType | null>(null);
   const [showTableDialog, setShowTableDialog] = useState(false);
+  const [tab, setTab] = useState<'ops' | 'tables' | 'tablets'>('ops');
   const [viewMode, setViewMode] = useState<'floor' | 'grid'>('floor');
   const [payRequestedOnly, setPayRequestedOnly] = useState(false);
+  const { sections, loaded: tablesLoaded } = useRestaurantTables();
+  const [configBusy, setConfigBusy] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newSeats, setNewSeats] = useState('4');
+  const [tabletSetupBusy, setTabletSetupBusy] = useState(false);
+  const [tabletAssignments, setTabletAssignments] = useState<Array<{ id: string; device_id: string; table_no: number; name?: string | null }>>([]);
+  const [selectedTabletTableNo, setSelectedTabletTableNo] = useState<string>('');
+  const [tabletSetupMessage, setTabletSetupMessage] = useState<string | null>(null);
+  const [tabletSetupError, setTabletSetupError] = useState<string | null>(null);
+
+  const TABLET_DEVICE_ID_KEY = 'pmx.tablet.deviceId.v1';
+  const getOrCreateTabletDeviceId = () => {
+    try {
+      const existing = localStorage.getItem(TABLET_DEVICE_ID_KEY);
+      if (existing && existing.trim()) return existing.trim();
+      const uuid = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : `tablet-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      localStorage.setItem(TABLET_DEVICE_ID_KEY, uuid);
+      return uuid;
+    } catch {
+      return `tablet-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+  };
+  const thisDeviceTabletId = useMemo(() => getOrCreateTabletDeviceId(), []);
 
   const persistedOrders = useSyncExternalStore(subscribeOrders, getOrdersSnapshot);
   // Use persisted orders only (disable demo fallback)
@@ -45,18 +79,60 @@ export default function TableManagement() {
   const paymentRequestedTableNos = useMemo(() => new Set(paymentRequests.map((r) => r.tableNo)), [paymentRequests]);
 
   const filteredSections = useMemo(() => {
-    if (!payRequestedOnly) return tableSections;
-    return tableSections
+    if (!payRequestedOnly) return sections;
+    return sections
       .map((s) => ({
         ...s,
         tables: s.tables.filter((t) => paymentRequestedTableNos.has(t.number)),
       }))
       .filter((s) => s.tables.length > 0);
-  }, [payRequestedOnly, paymentRequestedTableNos]);
+  }, [payRequestedOnly, paymentRequestedTableNos, sections]);
+
+  const allTables = useMemo(() => sections.flatMap((s) => s.tables), [sections]);
+  const thisDeviceAssignment = useMemo(
+    () => tabletAssignments.find((x) => String(x.device_id).toLowerCase() === String(thisDeviceTabletId).toLowerCase()) ?? null,
+    [tabletAssignments, thisDeviceTabletId]
+  );
+  const assignedTableNos = useMemo(() => new Set(tabletAssignments.map((x) => Number(x.table_no))), [tabletAssignments]);
+  const firstSetupCandidate = useMemo(() => {
+    const sorted = allTables.slice().sort((a, b) => Number(a.number) - Number(b.number));
+    const currentTableNo = thisDeviceAssignment ? Number(thisDeviceAssignment.table_no) : null;
+    if (currentTableNo != null && Number.isFinite(currentTableNo)) return String(currentTableNo);
+    const free = sorted.find((t) => !assignedTableNos.has(Number(t.number)));
+    return free ? String(free.number) : '';
+  }, [allTables, assignedTableNos, thisDeviceAssignment]);
   
   const getTableOrder = (tableId: string) => {
     return orders.find(o => o.tableId === tableId);
   };
+
+  const loadTabletAssignments = async () => {
+    if (!supabase || !brandId || !canTabletSetup) return;
+    try {
+      const { data, error } = await supabase
+        .from('customer_tablet_devices')
+        .select('id, device_id, table_no, name')
+        .eq('brand_id', brandId)
+        .eq('is_active', true)
+        .order('table_no', { ascending: true });
+      if (error) throw error;
+      setTabletAssignments((Array.isArray(data) ? data : []) as any);
+    } catch {
+      // Keep UI usable; assignment action will surface specific errors.
+      setTabletAssignments([]);
+    }
+  };
+
+  useEffect(() => {
+    void loadTabletAssignments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [brandId, canTabletSetup]);
+
+  useEffect(() => {
+    if (selectedTabletTableNo) return;
+    if (!firstSetupCandidate) return;
+    setSelectedTabletTableNo(firstSetupCandidate);
+  }, [firstSetupCandidate, selectedTabletTableNo]);
   
   const handleTableClick = (table: TableType) => {
     if (table.status === 'available') {
@@ -76,7 +152,7 @@ export default function TableManagement() {
     return (
       <Card
         className={cn(
-          'cursor-pointer transition-all hover:shadow-lg border-2',
+          'cursor-pointer transition-all hover:shadow-md border-2',
           STATUS_COLORS[table.status],
           paymentRequested && 'ring-2 ring-rose-500/70'
         )}
@@ -86,6 +162,11 @@ export default function TableManagement() {
           <div className="flex items-start justify-between mb-2">
             <div className="flex items-center gap-2">
               <span className="text-2xl font-bold">{table.number}</span>
+              {table.name ? (
+                <Badge variant="secondary" className="text-xs truncate max-w-[9rem]">{table.name}</Badge>
+              ) : table.section ? (
+                <Badge variant="secondary" className="text-xs">{table.section}</Badge>
+              ) : null}
               <Badge variant="outline" className="text-xs">
                 <Users className="h-3 w-3 mr-1" />{table.seats}
               </Badge>
@@ -95,26 +176,6 @@ export default function TableManagement() {
                 </Badge>
               )}
             </div>
-            {table.status === 'occupied' && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-                  <Button variant="ghost" size="icon" className="h-8 w-8">
-                    <MoreVertical className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem>
-                    <Eye className="h-4 w-4 mr-2" /> View Order
-                  </DropdownMenuItem>
-                  <DropdownMenuItem>
-                    <ArrowRightLeft className="h-4 w-4 mr-2" /> Transfer Table
-                  </DropdownMenuItem>
-                  <DropdownMenuItem className="text-destructive">
-                    <Trash2 className="h-4 w-4 mr-2" /> Void Order
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            )}
           </div>
           
           <p className="text-sm font-medium mb-2">{STATUS_LABELS[table.status]}</p>
@@ -145,15 +206,22 @@ export default function TableManagement() {
     <div>
       <PageHeader
         title="Table Management"
-        description="View and manage restaurant tables"
+        description="Operations and table setup"
         actions={
           <div className="flex items-center gap-2">
-            <Button variant={viewMode === 'floor' ? 'default' : 'outline'} onClick={() => setViewMode('floor')}>
-              Floor Plan
+            <Button variant={tab === 'ops' ? 'default' : 'outline'} onClick={() => setTab('ops')}>
+              Operations
             </Button>
-            <Button variant={viewMode === 'grid' ? 'default' : 'outline'} onClick={() => setViewMode('grid')}>
-              Grid
-            </Button>
+            {canConfigure ? (
+              <Button variant={tab === 'tables' ? 'default' : 'outline'} onClick={() => setTab('tables')}>
+                Tables
+              </Button>
+            ) : null}
+            {canTabletSetup ? (
+              <Button variant={tab === 'tablets' ? 'default' : 'outline'} onClick={() => setTab('tablets')}>
+                Tablets
+              </Button>
+            ) : null}
             <Button
               variant={payRequestedOnly ? 'default' : 'outline'}
               onClick={() => setPayRequestedOnly((v) => !v)}
@@ -161,32 +229,236 @@ export default function TableManagement() {
             >
               <BellRing className="h-4 w-4 mr-2" /> PAY Requested
             </Button>
-            <Button onClick={() => navigate('/pos/terminal')}>New Quick Sale</Button>
           </div>
         }
       />
       
-      {/* Table Legend */}
-      <div className="flex gap-4 mb-6 flex-wrap">
-        {Object.entries(STATUS_LABELS).map(([status, label]) => (
-          <div key={status} className="flex items-center gap-2">
-            <div className={cn('w-4 h-4 rounded border-2', STATUS_COLORS[status as TableStatus])} />
-            <span className="text-sm">{label}</span>
-          </div>
-        ))}
-        <div className="flex items-center gap-2">
-          <div className="w-4 h-4 rounded border-2 border-rose-500/60 bg-rose-500/20" />
-          <span className="text-sm">Payment Requested</span>
-        </div>
-      </div>
-      
-      {viewMode === 'floor' ? (
+      {tab === 'tablets' ? (
         <div className="space-y-4">
-          <h2 className="text-lg font-semibold">Interactive Floor Plan</h2>
+          {canTabletSetup ? (
+            <Card>
+              <CardContent className="p-4 space-y-3">
+                <div className="text-sm font-medium">Tablet Setup (this device)</div>
+                <div className="text-xs text-muted-foreground">
+                  Pick a table, click once, and this device is immediately ready for kiosk mode.
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2 items-end">
+                  <div className="grid gap-1">
+                    <div className="text-xs text-muted-foreground">Assign this device to table</div>
+                    <select
+                      className="h-10 rounded-md border bg-background px-3 text-sm"
+                      value={selectedTabletTableNo}
+                      onChange={(e) => {
+                        setSelectedTabletTableNo(e.target.value);
+                        setTabletSetupError(null);
+                        setTabletSetupMessage(null);
+                      }}
+                    >
+                      <option value="">Choose table</option>
+                      {allTables.map((t) => {
+                        const isAssigned = assignedTableNos.has(Number(t.number));
+                        const isCurrent = thisDeviceAssignment?.table_no === Number(t.number);
+                        return (
+                          <option
+                            key={t.id}
+                            value={String(t.number)}
+                            disabled={isAssigned && !isCurrent}
+                          >
+                            {(t.name?.trim() || `Table ${t.number}`)} • {t.seats} seats
+                            {isAssigned && !isCurrent ? ' (already assigned)' : ''}
+                            {isCurrent ? ' (this device)' : ''}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                  <Button
+                    onClick={async () => {
+                      if (!supabase || !brandId) return;
+                      const tableNo = Number(selectedTabletTableNo);
+                      if (!Number.isFinite(tableNo) || tableNo <= 0) {
+                        setTabletSetupError('Select a table first.');
+                        return;
+                      }
+                      const target = allTables.find((x) => Number(x.number) === tableNo);
+                      setTabletSetupBusy(true);
+                      setTabletSetupError(null);
+                      setTabletSetupMessage(null);
+                      try {
+                        const { data, error } = await supabase.rpc('assign_customer_tablet_device', {
+                          p_brand_id: brandId,
+                          p_device_id: thisDeviceTabletId,
+                          p_table_no: tableNo,
+                          p_name: target?.name ?? null,
+                          p_is_locked: true,
+                        });
+                        if (error) throw error;
+                        const ok = Boolean((data as any)?.ok ?? false);
+                        if (!ok) {
+                          const reason = String((data as any)?.error ?? 'assign_failed');
+                          if (reason === 'table_already_assigned') {
+                            setTabletSetupError('That table already has a tablet assigned.');
+                          } else {
+                            setTabletSetupError(reason);
+                          }
+                          return;
+                        }
+                        setTabletSetupMessage('Done. Entering kiosk mode...');
+                        await loadTabletAssignments();
+                        navigate('/tablet-lock');
+                      } catch (e: any) {
+                        setTabletSetupError(e?.message ?? 'Unable to set up this device.');
+                      } finally {
+                        setTabletSetupBusy(false);
+                      }
+                    }}
+                    disabled={tabletSetupBusy || !selectedTabletTableNo}
+                  >
+                    {tabletSetupBusy ? 'Setting up...' : 'Set up this device'}
+                  </Button>
+                </div>
+                {allTables.length === 0 ? (
+                  <div className="text-xs text-muted-foreground">
+                    No tables yet. First add tables in the Tables tab, then come back here.
+                  </div>
+                ) : null}
+                {tabletSetupError ? <div className="text-sm text-destructive">{tabletSetupError}</div> : null}
+                {tabletSetupMessage ? <div className="text-sm text-emerald-600">{tabletSetupMessage}</div> : null}
+              </CardContent>
+            </Card>
+          ) : null}
+        </div>
+      ) : null}
+
+      {tab === 'tables' ? (
+        <div className="space-y-4">
+          {canConfigure ? (
+            <>
+              <Card>
+                <CardContent className="p-4 space-y-3">
+                  <div className="text-sm font-medium">Add table</div>
+                  <div className="grid grid-cols-1 md:grid-cols-[1fr_120px_auto] gap-2 items-end">
+                    <div className="grid gap-1">
+                      <div className="text-xs text-muted-foreground">Name</div>
+                      <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="e.g. Table 1, VIP Booth, Patio A" />
+                    </div>
+                    <div className="grid gap-1">
+                      <div className="text-xs text-muted-foreground">Seats</div>
+                      <Input value={newSeats} onChange={(e) => setNewSeats(e.target.value)} inputMode="numeric" placeholder="4" />
+                    </div>
+                    <Button
+                      disabled={configBusy || !brandId}
+                      onClick={async () => {
+                        if (!supabase || !brandId) return;
+                        const seats = Number(newSeats);
+                        if (!Number.isFinite(seats) || seats <= 0) return;
+                        setConfigBusy(true);
+                        try {
+                          const maxNo = sections.flatMap((s) => s.tables).reduce((m, t) => Math.max(m, Number(t.number) || 0), 0);
+                          const tableNo = maxNo > 0 ? maxNo + 1 : 1;
+                          const { error } = await supabase.from('restaurant_tables').insert({
+                            brand_id: brandId,
+                            table_no: tableNo,
+                            name: newName.trim() || null,
+                            seats,
+                            status: 'available',
+                            is_active: true,
+                          });
+                          if (error) throw error;
+                          setNewName('');
+                          setNewSeats('4');
+                          await refreshRestaurantTables();
+                        } finally {
+                          setConfigBusy(false);
+                        }
+                      }}
+                    >
+                      Add
+                    </Button>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Tip: Table numbers are assigned automatically. Use names for the vibe: “VIP Booth”, “Table X”, “Patio A”.
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardContent className="p-4 space-y-3">
+                  <div className="text-sm font-medium">Your tables</div>
+                  <div className="space-y-2">
+                    {sections.flatMap((s) => s.tables).length === 0 ? (
+                      <div className="text-sm text-muted-foreground">No tables yet.</div>
+                    ) : (
+                      sections.flatMap((s) => s.tables).map((t) => (
+                        <div key={t.id} className="rounded-md border p-3">
+                          <div className="grid grid-cols-1 md:grid-cols-[90px_1fr_120px_110px] gap-2 items-center">
+                            <div className="text-sm font-semibold">#{t.number}</div>
+                            <div className="grid gap-1">
+                              <div className="text-xs text-muted-foreground">Name</div>
+                              <Input
+                                defaultValue={(t as any).name ?? ''}
+                                placeholder="Optional"
+                                onBlur={async (e) => {
+                                  if (!supabase || !brandId) return;
+                                  const v = e.target.value.trim();
+                                  await supabase.from('restaurant_tables').update({ name: v || null }).eq('id', t.id);
+                                  await refreshRestaurantTables();
+                                }}
+                              />
+                            </div>
+                            <div className="grid gap-1">
+                              <div className="text-xs text-muted-foreground">Seats</div>
+                              <Input
+                                defaultValue={String(t.seats ?? 4)}
+                                inputMode="numeric"
+                                onBlur={async (e) => {
+                                  if (!supabase || !brandId) return;
+                                  const seats = Number(e.target.value);
+                                  if (!Number.isFinite(seats) || seats <= 0) return;
+                                  await supabase.from('restaurant_tables').update({ seats }).eq('id', t.id);
+                                  await refreshRestaurantTables();
+                                }}
+                              />
+                            </div>
+                            <div className="flex items-center justify-end gap-2">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={async () => {
+                                  if (!supabase || !brandId) return;
+                                  await supabase.from('restaurant_tables').delete().eq('id', t.id);
+                                  await refreshRestaurantTables();
+                                }}
+                              >
+                                Remove
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+      
+      {tab === 'ops' && viewMode === 'floor' ? (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant={viewMode === 'floor' ? 'default' : 'outline'} onClick={() => setViewMode('floor')}>
+              Floor
+            </Button>
+            <Button size="sm" variant={viewMode === 'grid' ? 'default' : 'outline'} onClick={() => setViewMode('grid')}>
+              Grid
+            </Button>
+          </div>
           <InteractiveFloorPlan
             idleMinutesThreshold={20}
             tables={(() => {
-              const all = (payRequestedOnly ? filteredSections : tableSections).flatMap(s => s.tables);
+              const all = (payRequestedOnly ? filteredSections : sections).flatMap(s => s.tables);
               // simple auto-layout grid
               const cols = 6;
               const cellW = 90;
@@ -213,19 +485,34 @@ export default function TableManagement() {
               });
             })()}
             onTableClick={(t) => {
-              const table = tableSections.flatMap(s => s.tables).find(x => x.id === t.id);
+              const table = sections.flatMap(s => s.tables).find(x => x.id === t.id);
               if (table) handleTableClick(table);
             }}
           />
+          {tablesLoaded && sections.flatMap((s) => s.tables).length === 0 ? (
+            <div className="text-sm text-muted-foreground">
+              No tables configured yet. Ask a manager to add tables in Settings so they appear here.
+            </div>
+          ) : null}
           {payRequestedOnly && !paymentRequests.length && (
             <div className="text-sm text-muted-foreground">
               No tables have requested payment yet.
             </div>
           )}
         </div>
-      ) : (
+      ) : null}
+
+      {tab === 'ops' && viewMode === 'grid' ? (
         <div className="space-y-8">
-          {(payRequestedOnly ? filteredSections : tableSections).map(section => (
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant={viewMode === 'floor' ? 'default' : 'outline'} onClick={() => setViewMode('floor')}>
+              Floor
+            </Button>
+            <Button size="sm" variant={viewMode === 'grid' ? 'default' : 'outline'} onClick={() => setViewMode('grid')}>
+              Grid
+            </Button>
+          </div>
+          {(payRequestedOnly ? filteredSections : sections).map(section => (
             <div key={section.id}>
               <h2 className="text-lg font-semibold mb-4">{section.name}</h2>
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
@@ -235,13 +522,18 @@ export default function TableManagement() {
               </div>
             </div>
           ))}
+          {tablesLoaded && sections.flatMap((s) => s.tables).length === 0 ? (
+            <div className="text-sm text-muted-foreground">
+              No tables configured yet. Ask a manager to add tables in Settings so they appear here.
+            </div>
+          ) : null}
           {payRequestedOnly && !paymentRequests.length && (
             <div className="text-sm text-muted-foreground">
               No tables have requested payment yet.
             </div>
           )}
         </div>
-      )}
+      ) : null}
       
       {/* Table Details Dialog */}
       <Dialog open={showTableDialog} onOpenChange={setShowTableDialog}>

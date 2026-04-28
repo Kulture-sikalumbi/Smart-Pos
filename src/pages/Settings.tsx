@@ -19,11 +19,13 @@ import { useCurrency } from '@/contexts/CurrencyContext';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { cn } from '@/lib/utils';
-import { Building2, Check, ChevronsUpDown, Cpu, ReceiptText, Tags, Truck, WalletCards } from 'lucide-react';
+import { Building2, Check, ChevronsUpDown, Cpu, ReceiptText, Tags, TabletSmartphone, Truck, WalletCards } from 'lucide-react';
 import { getAllCurrencyCodes } from '@/lib/currencyOptions';
+import { supabase } from '@/lib/supabaseClient';
 
 export default function Settings() {
-  const { hasPermission } = useAuth();
+  const { hasPermission, user, brand } = useAuth();
+  const brandId = String((brand as any)?.id ?? (user as any)?.brand_id ?? '');
   const { settings, reset } = useBranding();
   const { currencyCode, setCurrencyCode } = useCurrency();
   const flags = useSyncExternalStore(subscribeFeatureFlags, getFeatureFlagsSnapshot, getFeatureFlagsSnapshot);
@@ -69,7 +71,8 @@ export default function Settings() {
   const [currencyDraft, setCurrencyDraft] = useState<string>(() => String(currencyCode ?? 'ZMW').toUpperCase());
   const [currencyPickerOpen, setCurrencyPickerOpen] = useState(false);
   const [currencySearch, setCurrencySearch] = useState('');
-  const [activeTile, setActiveTile] = useState<'branding' | 'advanced' | 'tills' | 'currency' | 'receipt' | 'categories' | 'suppliers'>('branding');
+  const [activeTile, setActiveTile] = useState<'branding' | 'advanced' | 'tills' | 'tabletMode' | 'currency' | 'receipt' | 'categories' | 'suppliers'>('branding');
+  const [tabletStatus, setTabletStatus] = useState<{ configured: number; totalTables: number }>({ configured: 0, totalTables: 0 });
 
   useEffect(() => {
     setCurrencyDraft(String(currencyCode ?? 'ZMW').toUpperCase());
@@ -106,6 +109,24 @@ export default function Settings() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    (async () => {
+      if (!supabase || !brandId) return;
+      try {
+        const [tabletRes, tablesRes] = await Promise.all([
+          supabase.from('customer_tablet_devices').select('id', { count: 'exact', head: true }).eq('brand_id', brandId).eq('is_active', true),
+          supabase.from('restaurant_tables').select('id', { count: 'exact', head: true }).eq('brand_id', brandId).eq('is_active', true),
+        ]);
+        setTabletStatus({
+          configured: Number(tabletRes.count ?? 0),
+          totalTables: Number(tablesRes.count ?? 0),
+        });
+      } catch {
+        // ignore status fetch errors
+      }
+    })();
+  }, [brandId]);
 
   const onSeedDefaults = async () => {
     if (!hasPermission('manageSettings')) return;
@@ -155,7 +176,7 @@ export default function Settings() {
     <div>
       <PageHeader title="Settings" description="System configuration and preferences" />
 
-      <div className="mb-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3">
+      <div className="mb-6 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-3">
         <Card className={`cursor-pointer transition-colors ${activeTile === 'branding' ? 'border-primary' : 'border-border/60'}`} onClick={() => setActiveTile('branding')}>
           <CardContent className="p-3">
             <div className="flex items-center gap-2 text-sm font-medium"><Building2 className="h-4 w-4" /> Brand</div>
@@ -176,6 +197,15 @@ export default function Settings() {
             </CardContent>
           </Card>
         ) : null}
+        <Card className={`cursor-pointer transition-colors ${activeTile === 'tabletMode' ? 'border-primary' : 'border-border/60'}`} onClick={() => setActiveTile('tabletMode')}>
+          <CardContent className="p-3">
+            <div className="flex items-center gap-2 text-sm font-medium"><TabletSmartphone className="h-4 w-4" /> Tablet Mode</div>
+            <div className="text-[11px] text-muted-foreground mt-1">Optional table ordering tablets</div>
+            <div className="text-[11px] text-muted-foreground mt-1">
+              {tabletStatus.configured}/{tabletStatus.totalTables || 0} tables configured
+            </div>
+          </CardContent>
+        </Card>
         <Card className={`cursor-pointer transition-colors ${activeTile === 'currency' ? 'border-primary' : 'border-border/60'}`} onClick={() => setActiveTile('currency')}>
           <CardContent className="p-3">
             <div className="flex items-center gap-2 text-sm font-medium"><WalletCards className="h-4 w-4" /> Currency</div>
@@ -280,6 +310,36 @@ export default function Settings() {
             <Button asChild variant="outline">
               <NavLink to="/app/settings/tills">Open</NavLink>
             </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {activeTile === 'tabletMode' ? (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle className="text-base">Tablet Mode (Optional)</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="text-sm">
+              Tablet Mode lets guests order from table tablets. This feature is optional; brands can run normal POS without it.
+            </div>
+            <div className="rounded-md border bg-muted/20 p-3 text-xs text-muted-foreground">
+              Setup flow: <strong>1) Configure tables</strong> → <strong>2) Set up this device as a tablet</strong> → <strong>3) Open Tablet Mode</strong>.
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button asChild variant="outline">
+                <NavLink to="/app/pos/tables">Configure Tables</NavLink>
+              </Button>
+              <Button asChild variant="outline">
+                <NavLink to="/app/pos/tables">Set Up This Device</NavLink>
+              </Button>
+              <Button asChild>
+                <NavLink to="/tablet-lock">Open Tablet Mode</NavLink>
+              </Button>
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Note: if a table already has a tablet assigned, setup will block duplicate assignment and show a clear message.
+            </div>
           </CardContent>
         </Card>
       ) : null}

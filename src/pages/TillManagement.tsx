@@ -26,6 +26,17 @@ type DeviceRow = {
   last_seen_at: string;
 };
 
+type TabletDeviceRow = {
+  id: string;
+  brand_id: string;
+  device_id: string;
+  table_no: number;
+  name: string | null;
+  is_locked: boolean;
+  is_active: boolean;
+  last_seen_at: string;
+};
+
 export default function TillManagement() {
   const { user, brand, hasPermission } = useAuth();
   const brandId = String((brand as any)?.id ?? (user as any)?.brand_id ?? '');
@@ -34,25 +45,36 @@ export default function TillManagement() {
   const [busy, setBusy] = useState(false);
   const [tills, setTills] = useState<TillRow[]>([]);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
+  const [tabletDevices, setTabletDevices] = useState<TabletDeviceRow[]>([]);
   const [deviceTillDraft, setDeviceTillDraft] = useState<Record<string, string>>({});
 
   const [newCode, setNewCode] = useState('1');
   const [newName, setNewName] = useState('Till 1');
+  const [newTabletDeviceId, setNewTabletDeviceId] = useState('');
+  const [newTabletTableNo, setNewTabletTableNo] = useState('');
+  const [newTabletName, setNewTabletName] = useState('');
 
   const load = async () => {
     if (!supabase || !brandId || !canManage) return;
     setBusy(true);
     try {
-      const [tillRes, deviceRes] = await Promise.all([
+      const [tillRes, deviceRes, tabletRes] = await Promise.all([
         supabase.from('tills').select('id, brand_id, code, name, is_active').eq('brand_id', brandId).order('code', { ascending: true }),
         supabase.from('pos_devices').select('id, brand_id, device_id, till_id, last_seen_at').eq('brand_id', brandId).order('last_seen_at', { ascending: false }),
+        supabase
+          .from('customer_tablet_devices')
+          .select('id, brand_id, device_id, table_no, name, is_locked, is_active, last_seen_at')
+          .eq('brand_id', brandId)
+          .order('table_no', { ascending: true }),
       ]);
 
       if (tillRes.error) throw tillRes.error;
       if (deviceRes.error) throw deviceRes.error;
+      if (tabletRes.error) throw tabletRes.error;
 
       setTills((Array.isArray(tillRes.data) ? tillRes.data : []) as any);
       setDevices((Array.isArray(deviceRes.data) ? deviceRes.data : []) as any);
+      setTabletDevices((Array.isArray(tabletRes.data) ? tabletRes.data : []) as any);
       const nextDraft: Record<string, string> = {};
       for (const d of (Array.isArray(deviceRes.data) ? deviceRes.data : []) as any[]) {
         nextDraft[String(d.id)] = String(d.till_id ?? '');
@@ -117,6 +139,65 @@ export default function TillManagement() {
       await load();
     } catch (e: any) {
       toast({ title: 'Unable to reassign terminal', description: e?.message ?? String(e), variant: 'destructive' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const assignTabletDevice = async () => {
+    if (!supabase || !brandId || !canManage) return;
+    const deviceId = newTabletDeviceId.trim();
+    const tableNo = Number(newTabletTableNo);
+    if (!deviceId || !Number.isFinite(tableNo) || tableNo <= 0) {
+      toast({ title: 'Missing fields', description: 'Enter tablet device id and a valid table number.', variant: 'destructive' });
+      return;
+    }
+    setBusy(true);
+    try {
+      const { data, error } = await supabase.rpc('assign_customer_tablet_device', {
+        p_brand_id: brandId,
+        p_device_id: deviceId,
+        p_table_no: tableNo,
+        p_name: newTabletName.trim() || null,
+        p_is_locked: true,
+      });
+      if (error) throw error;
+      const ok = Boolean((data as any)?.ok ?? false);
+      if (!ok) {
+        const reason = String((data as any)?.error ?? 'assignment_failed');
+        if (reason === 'table_already_assigned') {
+          toast({
+            title: 'Table already assigned',
+            description: 'This table already has a tablet mapped. Reassign or remove the existing mapping first.',
+            variant: 'destructive',
+          });
+        } else {
+          toast({ title: 'Unable to assign tablet', description: reason, variant: 'destructive' });
+        }
+        return;
+      }
+      toast({ title: 'Tablet assigned', description: `Device mapped to table ${tableNo}.` });
+      setNewTabletDeviceId('');
+      setNewTabletTableNo('');
+      setNewTabletName('');
+      await load();
+    } catch (e: any) {
+      toast({ title: 'Unable to assign tablet', description: e?.message ?? String(e), variant: 'destructive' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeTabletDevice = async (rowId: string) => {
+    if (!supabase || !canManage) return;
+    setBusy(true);
+    try {
+      const { error } = await supabase.from('customer_tablet_devices').delete().eq('id', rowId);
+      if (error) throw error;
+      toast({ title: 'Tablet removed', description: 'Tablet assignment deleted.' });
+      await load();
+    } catch (e: any) {
+      toast({ title: 'Unable to remove tablet', description: e?.message ?? String(e), variant: 'destructive' });
     } finally {
       setBusy(false);
     }
@@ -265,6 +346,84 @@ export default function TillManagement() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="text-base">Customer Table Tablets</CardTitle>
+          <CardDescription>
+            Register locked customer tablets per table. This keeps ordering traceable by table and device.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-[1.2fr_120px_1fr_auto] gap-2 items-end">
+            <div className="grid gap-1">
+              <div className="text-xs text-muted-foreground">Tablet Device ID</div>
+              <Input
+                value={newTabletDeviceId}
+                onChange={(e) => setNewTabletDeviceId(e.target.value)}
+                placeholder="e.g. tablet-4f20..."
+              />
+            </div>
+            <div className="grid gap-1">
+              <div className="text-xs text-muted-foreground">Table No</div>
+              <Input
+                value={newTabletTableNo}
+                onChange={(e) => setNewTabletTableNo(e.target.value)}
+                placeholder="e.g. 12"
+                inputMode="numeric"
+              />
+            </div>
+            <div className="grid gap-1">
+              <div className="text-xs text-muted-foreground">Name (optional)</div>
+              <Input
+                value={newTabletName}
+                onChange={(e) => setNewTabletName(e.target.value)}
+                placeholder="e.g. Patio Tablet A"
+              />
+            </div>
+            <Button onClick={assignTabletDevice} disabled={busy}>Assign Tablet</Button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Table</TableHead>
+                  <TableHead>Device</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Last Seen</TableHead>
+                  <TableHead className="text-right">Action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {!tabletDevices.length ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-sm text-muted-foreground">
+                      No customer tablets registered yet.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  tabletDevices.map((t) => (
+                    <TableRow key={t.id}>
+                      <TableCell className="font-semibold">Table {t.table_no}</TableCell>
+                      <TableCell className="font-mono text-xs">{t.device_id}</TableCell>
+                      <TableCell>{t.name ?? '—'}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {t.last_seen_at ? new Date(t.last_seen_at).toLocaleString() : 'Never'}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button variant="outline" size="sm" onClick={() => removeTabletDevice(t.id)} disabled={busy}>
+                          Remove
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
