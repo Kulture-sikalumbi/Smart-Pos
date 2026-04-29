@@ -50,11 +50,16 @@ export default function TabletEnrollment() {
   const [sessionToken, setSessionToken] = useState<string>('');
   const [brandName, setBrandName] = useState<string>('Brand');
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [issuedTableNo, setIssuedTableNo] = useState<number | null>(null);
   const [rows, setRows] = useState<AssignmentRow[]>([]);
   const [replaceTarget, setReplaceTarget] = useState<AssignmentRow | null>(null);
+  const [autoAssignAttempted, setAutoAssignAttempted] = useState(false);
   const { canPrompt, isInstalled, fallbackHint, promptInstall } = useInstallPrompt();
 
-  const tokenFromUrl = useMemo(() => String(searchParams.get('token') ?? '').trim(), [searchParams]);
+  const tokenFromUrl = useMemo(
+    () => String(searchParams.get('token') ?? searchParams.get('tabletEnrollToken') ?? '').trim(),
+    [searchParams]
+  );
   const sessionFromUrl = useMemo(() => String(searchParams.get('session') ?? '').trim(), [searchParams]);
 
   const loadTables = async (session: string) => {
@@ -122,6 +127,8 @@ export default function TabletEnrollment() {
         setBrandName(String((data as any)?.brand_name ?? 'Brand'));
         const rawExpiry = String((data as any)?.expires_at ?? '').trim();
         setExpiresAt(rawExpiry || null);
+        const rawIssuedTableNo = Number((data as any)?.issued_table_no ?? 0);
+        setIssuedTableNo(Number.isFinite(rawIssuedTableNo) && rawIssuedTableNo > 0 ? rawIssuedTableNo : null);
         await loadTables(nextSession);
       } catch (e: any) {
         setError(e?.message ?? 'Unable to start tablet enrollment.');
@@ -131,6 +138,26 @@ export default function TabletEnrollment() {
     };
     void init();
   }, [deviceId, sessionFromUrl, tokenFromUrl]);
+
+  useEffect(() => {
+    if (autoAssignAttempted) return;
+    if (!issuedTableNo) return;
+    if (!rows.length) return;
+    const target = rows.find((r) => Number(r.table_no) === Number(issuedTableNo));
+    if (!target) {
+      setAutoAssignAttempted(true);
+      return;
+    }
+    const isAssignedToThisDevice =
+      target.is_assigned && String(target.assigned_device_id ?? '').toLowerCase() === String(deviceId).toLowerCase();
+    const isAssignedToOtherDevice = target.is_assigned && !isAssignedToThisDevice;
+    setAutoAssignAttempted(true);
+    if (isAssignedToOtherDevice) {
+      setReplaceTarget(target);
+      return;
+    }
+    void assignTable(target, false);
+  }, [autoAssignAttempted, issuedTableNo, rows, deviceId]);
 
   const assignTable = async (row: AssignmentRow, replaceExisting: boolean) => {
     if (!supabase || !sessionToken) return;

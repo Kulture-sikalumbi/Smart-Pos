@@ -60,6 +60,7 @@ export default function TableManagement() {
   const [pairingLink, setPairingLink] = useState<string>('');
   const [pairingQrDataUrl, setPairingQrDataUrl] = useState<string>('');
   const [pairingExpiresAt, setPairingExpiresAt] = useState<string | null>(null);
+  const [pairingTableNo, setPairingTableNo] = useState<string>('');
 
   const TABLET_DEVICE_ID_KEY = 'pmx.tablet.deviceId.v1';
   const TABLET_KIOSK_ENABLED_KEY = 'pmx.tablet.kiosk.enabled.v1';
@@ -141,14 +142,19 @@ export default function TableManagement() {
     setSelectedTabletTableNo(firstSetupCandidate);
   }, [firstSetupCandidate, selectedTabletTableNo]);
 
-  const generatePairingQr = async () => {
+  const generatePairingQr = async (targetTableNo?: number) => {
     if (!supabase || !brandId) return;
     setPairingBusy(true);
     setPairingError(null);
     try {
+      const normalizedTableNo =
+        Number.isFinite(Number(targetTableNo)) && Number(targetTableNo) > 0
+          ? Number(targetTableNo)
+          : null;
       const { data, error } = await supabase.rpc('issue_tablet_enrollment_token', {
         p_brand_id: brandId,
         p_ttl_seconds: 180,
+        p_table_no: normalizedTableNo,
       });
       if (error) throw error;
       const ok = Boolean((data as any)?.ok ?? false);
@@ -386,10 +392,13 @@ export default function TableManagement() {
                   <div>
                     <div className="text-sm font-medium">Pair Tablet via QR</div>
                     <div className="text-xs text-muted-foreground">
-                      Scan with the customer tablet to open secure kiosk enrollment.
+                      Generate brand QR or table-specific auto-pair QR.
                     </div>
                   </div>
-                  <Button onClick={() => void generatePairingQr()} disabled={pairingBusy || !brandId}>
+                  <Button
+                    onClick={() => void generatePairingQr(pairingTableNo ? Number(pairingTableNo) : undefined)}
+                    disabled={pairingBusy || !brandId}
+                  >
                     {pairingBusy ? (
                       <>
                         <RefreshCw className="h-4 w-4 mr-2 animate-spin" /> Generating...
@@ -400,6 +409,27 @@ export default function TableManagement() {
                       </>
                     )}
                   </Button>
+                </div>
+                <div className="grid gap-1">
+                  <div className="text-xs text-muted-foreground">Table-specific QR (optional)</div>
+                  <select
+                    className="h-10 rounded-md border bg-background px-3 text-sm"
+                    value={pairingTableNo}
+                    onChange={(e) => setPairingTableNo(e.target.value)}
+                  >
+                    <option value="">Any table (choose on tablet)</option>
+                    {allTables
+                      .slice()
+                      .sort((a, b) => Number(a.number) - Number(b.number))
+                      .map((t) => (
+                        <option key={t.id} value={String(t.number)}>
+                          {(t.name?.trim() || `Table ${t.number}`)} • {t.seats} seats
+                        </option>
+                      ))}
+                  </select>
+                  <div className="text-[11px] text-muted-foreground">
+                    If a table is selected, scanning this QR opens enrollment pre-targeted to that table.
+                  </div>
                 </div>
                 {pairingQrDataUrl ? (
                   <div className="rounded-md border p-3 bg-muted/30 space-y-2">

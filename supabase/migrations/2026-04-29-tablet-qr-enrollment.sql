@@ -124,7 +124,8 @@ CREATE POLICY "tablet_enrollment_sessions_select_brand_owner"
 
 CREATE OR REPLACE FUNCTION public.issue_tablet_enrollment_token(
   p_brand_id uuid,
-  p_ttl_seconds integer DEFAULT 180
+  p_ttl_seconds integer DEFAULT 180,
+  p_table_no integer DEFAULT NULL
 )
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -160,11 +161,13 @@ BEGIN
     brand_id,
     token_hash,
     issued_by,
+    issued_for_table_no,
     expires_at
   ) VALUES (
     p_brand_id,
     v_token_hash,
     auth.uid(),
+    CASE WHEN p_table_no IS NOT NULL AND p_table_no > 0 THEN p_table_no ELSE NULL END,
     v_expires_at
   );
 
@@ -172,7 +175,7 @@ BEGIN
     'ok', true,
     'token', v_token,
     'expires_at', v_expires_at,
-    'setup_url', '/tablet-enroll?token=' || v_token
+    'setup_url', '/?tabletEnrollToken=' || v_token
   );
 END;
 $$;
@@ -196,6 +199,7 @@ DECLARE
   v_brand_name text;
   v_token_id uuid;
   v_expires_at timestamptz;
+  v_issued_table_no integer;
 BEGIN
   v_token := trim(coalesce(p_token, ''));
   v_device := trim(coalesce(p_device_id, ''));
@@ -212,8 +216,8 @@ BEGIN
   WHERE t.token_hash = v_token_hash
     AND t.used_at IS NULL
     AND t.expires_at > now()
-  RETURNING t.id, t.brand_id, t.expires_at
-  INTO v_token_id, v_brand_id, v_expires_at;
+  RETURNING t.id, t.brand_id, t.expires_at, t.issued_for_table_no
+  INTO v_token_id, v_brand_id, v_expires_at, v_issued_table_no;
 
   IF v_token_id IS NULL OR v_brand_id IS NULL THEN
     RETURN jsonb_build_object('ok', false, 'error', 'token_invalid_or_expired');
@@ -247,6 +251,7 @@ BEGIN
     'brand_id', v_brand_id,
     'brand_name', v_brand_name,
     'session_token', v_session_token,
+    'issued_table_no', v_issued_table_no,
     'expires_at', least(v_expires_at, now() + make_interval(secs => 900))
   );
 END;
@@ -491,7 +496,7 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.issue_tablet_enrollment_token(uuid, integer) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.issue_tablet_enrollment_token(uuid, integer, integer) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.consume_tablet_enrollment_token(text, text) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.list_brand_tablet_assignment_status(text) TO anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.replace_customer_tablet_device(uuid, integer, text, text, boolean) TO authenticated;
