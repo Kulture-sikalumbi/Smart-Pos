@@ -7,6 +7,7 @@ export type OrderStatus = 'open' | 'sent' | 'in_progress' | 'ready' | 'served' |
 export type OrderType = 'eat_in' | 'take_out' | 'delivery';
 export type PaymentMethod = 'cash' | 'card' | 'cheque' | 'account' | 'non_bank';
 export type OrderSource = 'pos' | 'tablet' | 'self_order' | 'qr';
+export type MenuPrepRoute = 'kitchen' | 'direct_sale';
 
 export interface Table {
   id: string;
@@ -179,6 +180,12 @@ export interface POSMenuItem {
   trackInventory?: boolean;
   /** Optional direct stock link for sale deduction from front_stock(SALE). */
   physicalStockItemId?: string;
+  /**
+   * Kitchen routing:
+   * - kitchen: item appears in kitchen send flow
+   * - direct_sale: item is sold directly (e.g. bottled drinks)
+   */
+  prepRoute?: MenuPrepRoute;
 }
 
 // Table Section

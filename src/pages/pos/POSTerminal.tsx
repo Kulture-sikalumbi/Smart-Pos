@@ -32,7 +32,7 @@ import { useBranding } from '@/contexts/BrandingContext';
 import ReceiptPrintDialog from '@/components/pos/ReceiptPrintDialog';
 import { usePosMenu } from '@/hooks/usePosMenu';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { getPosPaymentRequestsSnapshot, resolvePosPaymentRequest, subscribePosPaymentRequests } from '@/lib/posPaymentRequestStore';
+import { addPosPaymentRequest, getPosPaymentRequestsSnapshot, resolvePosPaymentRequest, subscribePosPaymentRequests } from '@/lib/posPaymentRequestStore';
 import { getPosNotificationsSnapshot, subscribePosNotifications, markNotificationsSeen, deleteNotificationById } from '@/lib/posNotificationStore';
 import { ROLE_NAMES } from '@/types/auth';
 import { supabase } from '@/lib/supabaseClient';
@@ -92,7 +92,7 @@ export default function POSTerminal() {
   const seenIncomingOrderIdsRef = useRef<Set<string>>(new Set());
   const seenIncomingCallNotifIdsRef = useRef<Set<string>>(new Set());
   const [incomingOrders, setIncomingOrders] = useState<Array<{ id: string; orderNo: number; tableNo?: number; tableLabel?: string; total: number; source?: string; createdAt: string }>>([]);
-  const [incomingCalls, setIncomingCalls] = useState<Array<{ id: string; tableNo?: number; tableLabel?: string; createdAt: string }>>([]);
+  const [incomingCalls, setIncomingCalls] = useState<Array<{ id: string; kind: 'waiter_call' | 'payment_request'; tableNo?: number; tableLabel?: string; createdAt: string }>>([]);
   const [showIncomingOrders, setShowIncomingOrders] = useState(false);
   const posNotifs = useSyncExternalStore(subscribePosNotifications, getPosNotificationsSnapshot);
   const requestNotifs = useMemo(
@@ -233,6 +233,8 @@ export default function POSTerminal() {
   const [showTableSelect, setShowTableSelect] = useState(false);
   const [showHeldOrders, setShowHeldOrders] = useState(false);
   const [showPaymentRequests, setShowPaymentRequests] = useState(false);
+  const [showKitchenSendReview, setShowKitchenSendReview] = useState(false);
+  const [reviewParkAfterSend, setReviewParkAfterSend] = useState(false);
   const [sendKitchenBusy, setSendKitchenBusy] = useState(false);
   const [logoutBusy, setLogoutBusy] = useState(false);
 
@@ -767,6 +769,20 @@ export default function POSTerminal() {
   const [stockBlockTitle, setStockBlockTitle] = useState<string | null>(null);
   const [stockBlockDescription, setStockBlockDescription] = useState<string | null>(null);
 
+  const getItemPrepRoute = (menuItemId: string): 'kitchen' | 'direct_sale' => {
+    const mi = items.find((x) => x.id === menuItemId);
+    return mi?.prepRoute === 'direct_sale' ? 'direct_sale' : 'kitchen';
+  };
+
+  const unsentKitchenItems = useMemo(
+    () => orderItems.filter((i) => !i.isVoided && !i.sentToKitchen && getItemPrepRoute(i.menuItemId) === 'kitchen'),
+    [orderItems, items]
+  );
+  const unsentDirectSaleItems = useMemo(
+    () => orderItems.filter((i) => !i.isVoided && getItemPrepRoute(i.menuItemId) === 'direct_sale'),
+    [orderItems, items]
+  );
+
   useEffect(() => {
     const on = () => setIsOnline(true);
     const off = () => setIsOnline(false);
@@ -824,11 +840,12 @@ export default function POSTerminal() {
       const prevSet = new Set(prevNotifIds.current.split('|').filter(Boolean));
       for (const n of posNotifs) {
         if (!prevSet.has(n.id)) {
-          if (n.type === 'waiter_call' && !seenIncomingCallNotifIdsRef.current.has(n.id)) {
+          if ((n.type === 'waiter_call' || n.type === 'tablet_payment_request') && !seenIncomingCallNotifIdsRef.current.has(n.id)) {
             seenIncomingCallNotifIdsRef.current.add(n.id);
             setIncomingCalls((prev) => [
               {
                 id: String(n.id),
+                kind: n.type === 'tablet_payment_request' ? 'payment_request' : 'waiter_call',
                 tableNo: n.payload?.tableNo != null ? Number(n.payload.tableNo) : undefined,
                 tableLabel: n.payload?.tableLabel != null ? String(n.payload.tableLabel) : undefined,
                 createdAt: String(n.created_at ?? new Date().toISOString()),
@@ -842,6 +859,11 @@ export default function POSTerminal() {
                 title: 'Waiter call',
                 description: `${n.payload?.tableLabel ?? (n.payload?.tableNo ? `Table ${n.payload.tableNo}` : 'A table')} is requesting service.`,
               });
+            } else if (n.type === 'tablet_payment_request') {
+              toast({
+                title: 'Bill requested',
+                description: `${n.payload?.tableLabel ?? (n.payload?.tableNo ? `Table ${n.payload.tableNo}` : 'A table')} requested bill/payment.`,
+              });
             } else {
               toast({ title: 'Order Ready', description: `Order #${n.payload?.orderNo}${n.payload?.tableNo ? ` • Table ${n.payload.tableNo}` : ''}` });
             }
@@ -853,11 +875,13 @@ export default function POSTerminal() {
             const body =
               n.type === 'waiter_call'
                 ? `${n.payload?.tableLabel ?? (n.payload?.tableNo ? `Table ${n.payload.tableNo}` : 'A table')} calls for waiter`
+                : n.type === 'tablet_payment_request'
+                  ? `${n.payload?.tableLabel ?? (n.payload?.tableNo ? `Table ${n.payload.tableNo}` : 'A table')} requested bill/payment`
                 : `Order #${n.payload?.orderNo}${n.payload?.tableNo ? ` • Table ${n.payload.tableNo}` : ''}`;
             setSlidePayload({
-              title: n.type === 'waiter_call' ? 'Waiter Call' : 'Order Ready',
+              title: n.type === 'waiter_call' ? 'Waiter Call' : n.type === 'tablet_payment_request' ? 'Bill Requested' : 'Order Ready',
               body,
-              openTarget: n.type === 'waiter_call' ? 'incoming' : 'notifications',
+              openTarget: n.type === 'waiter_call' || n.type === 'tablet_payment_request' ? 'incoming' : 'notifications',
             });
             setShowSlide(true);
             if (slideTimerRef.current) window.clearTimeout(slideTimerRef.current as any);
@@ -1404,13 +1428,13 @@ export default function POSTerminal() {
     clearOrder();
   };
 
-  const applyRecipeDeductionsOrThrow = async () => {
+  const applyRecipeDeductionsOrThrow = async (targetItems?: OrderItem[]) => {
     // POS-side precheck only:
     // - direct SALE-linked items do not require recipes
     // - non-direct items must have a manufacturing recipe
     //
     // Actual stock deduction is handled server-side via orderStore -> handle_order_stock_deduction.
-    const toDeduct = orderItems.filter((i) => !i.isVoided && !i.sentToKitchen);
+    const toDeduct = (targetItems ?? orderItems).filter((i) => !i.isVoided && !i.sentToKitchen);
     if (!toDeduct.length) return;
 
     // Ensure recipes are loaded (best-effort) so snapshot is populated.
@@ -1490,14 +1514,49 @@ export default function POSTerminal() {
     setShowRecipeError(true);
   };
   
-  const handleSendToKitchen = async () => {
+  const openKitchenSendReview = (parkAfterSend: boolean) => {
+    if (orderItems.length === 0) return;
+    setReviewParkAfterSend(parkAfterSend);
+    setShowKitchenSendReview(true);
+  };
+
+  const handleSendToKitchen = async (opts?: { parkAfterSend?: boolean }) => {
     if (sendKitchenBusy) return;
     setSendKitchenBusy(true);
     if (!isOnline) {
       toast({ title: 'No Internet', description: 'You are offline. Send-to-kitchen requests will sync when connection returns.' });
     }
     try {
-      await applyRecipeDeductionsOrThrow();
+      const shouldPark = Boolean(opts?.parkAfterSend);
+      if (!unsentKitchenItems.length) {
+        if (!shouldPark) {
+          toast({
+            title: 'No kitchen items',
+            description: 'All current items are marked as direct sale. Use Proceed to complete payment.',
+          });
+          return;
+        }
+        const parked = upsertActiveOrder({ status: 'open', sent: false });
+        const parkedTableNo = Number(parked.tableNo ?? selectedTable ?? 0);
+        if (parkedTableNo > 0) {
+          addPosPaymentRequest({
+            tableNo: parkedTableNo,
+            orderId: parked.id,
+            total: Number(parked.total ?? orderTotals.total ?? 0),
+            requestedBy: user?.name ?? user?.email ?? 'cashier',
+            note: 'Unpaid (awaiting bill)',
+          });
+          clearOrder();
+          setShowPaymentRequests(true);
+          toast({
+            title: 'Order parked',
+            description: `Table ${parkedTableNo} moved to payment tracking.`,
+          });
+        }
+        return;
+      }
+
+      await applyRecipeDeductionsOrThrow(unsentKitchenItems);
 
       // Merge duplicate items by menuItemId BEFORE saving
       const mergedItems = orderItems.reduce((acc, it) => {
@@ -1505,6 +1564,7 @@ export default function POSTerminal() {
         if (existing) {
           existing.quantity += it.quantity;
           existing.total += it.total;
+          existing.sentToKitchen = Boolean(existing.sentToKitchen || it.sentToKitchen);
         } else {
           acc.push({ ...it });
         }
@@ -1516,10 +1576,31 @@ export default function POSTerminal() {
 
       // debug: removed on-screen merged items
 
-      // Keep the current ticket visible so the cashier can continue reviewing it
-      // and only lock the kitchen-sent lines by marking them as sent.
-      setOrderItems((prev) => prev.map((item) => ({ ...item, sentToKitchen: true })));
+      // Keep the current ticket visible and mark only kitchen-routed lines as sent.
+      setOrderItems((prev) =>
+        prev.map((item) =>
+          (!item.isVoided && getItemPrepRoute(item.menuItemId) === 'kitchen')
+            ? { ...item, sentToKitchen: true }
+            : item
+        )
+      );
       setActiveOrderId(saved.id);
+      const isTableOrder = orderType === 'eat_in' && Number(selectedTable) > 0;
+      if (shouldPark && isTableOrder) {
+        addPosPaymentRequest({
+          tableNo: Number(selectedTable),
+          orderId: saved.id,
+          total: Number(saved.total ?? orderTotals.total ?? 0),
+          requestedBy: user?.name ?? user?.email ?? 'cashier',
+          note: 'Unpaid (awaiting bill)',
+        });
+        clearOrder();
+        setShowPaymentRequests(true);
+        toast({
+          title: 'Order parked',
+          description: `Table ${Number(selectedTable)} moved to payment tracking.`,
+        });
+      }
 
       // Note: we intentionally do NOT call `sendOrderPayload` here because
       // `upsertOrder` already triggers remote sync (via `sendOrderToSupabase`).
@@ -1541,7 +1622,7 @@ export default function POSTerminal() {
     try {
       await applyRecipeDeductionsOrThrow();
 
-      const saved = upsertActiveOrder({ status: 'paid', paymentMethod: method, sent: true });
+      const saved = upsertActiveOrder({ status: 'paid', paymentMethod: method, sent: false });
 
       setReceiptOrder(saved);
       setShowReceipt(true);
@@ -1558,6 +1639,87 @@ export default function POSTerminal() {
       setShowPayment(false);
       showDeductionError(e);
     }
+  };
+
+  const presentBillForTracking = () => {
+    const active = activeOrderId ? findOrderById(activeOrderId) : null;
+    const tableOrder = selectedTable ? findLatestActiveOrderForTable(selectedTable) : null;
+    const target = active ?? tableOrder;
+    if (!target) {
+      toast({
+        title: 'No active order',
+        description: 'Send the order first, then present/request bill for tracking.',
+      });
+      return;
+    }
+    const tableNo = Number(target.tableNo ?? selectedTable ?? 0);
+    if (!Number.isFinite(tableNo) || tableNo <= 0) {
+      toast({
+        title: 'Table required',
+        description: 'Bill tracking works for table orders. Select a table first.',
+      });
+      return;
+    }
+    addPosPaymentRequest({
+      tableNo,
+      orderId: target.id,
+      total: Number(target.total ?? orderTotals.total ?? 0),
+      requestedBy: user?.name ?? user?.email ?? 'cashier',
+      note: 'Bill presented by cashier',
+    });
+    setShowPaymentRequests(true);
+    toast({
+      title: 'Bill presented',
+      description: `Table ${tableNo} added to payment tracking.`,
+    });
+  };
+
+  const printPreparationTicket = () => {
+    if (orderItems.length === 0) return;
+    const existing = activeOrderId ? findOrderById(activeOrderId) : null;
+    const orderNo = existing?.orderNo ?? nextOrderNo(orders);
+    const tableLabel =
+      orderType === 'eat_in'
+        ? selectedTable
+          ? `Table ${selectedTable}`
+          : 'Eat In'
+        : 'Take Out';
+    const issuedAt = new Date().toLocaleString();
+    const itemRows = orderItems
+      .map((it) => `<tr><td style="padding:4px 0;">${it.quantity}x</td><td style="padding:4px 0 4px 8px;">${String(it.menuItemName ?? '')}</td></tr>`)
+      .join('');
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Preparation Ticket</title>
+    <style>
+      body { font-family: Arial, sans-serif; padding: 12px; color: #111; }
+      .brand { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+      .meta { font-size: 13px; margin: 2px 0; }
+      .divider { border-top: 1px dashed #555; margin: 10px 0; }
+      table { width: 100%; border-collapse: collapse; }
+      .footer { margin-top: 10px; font-size: 12px; color: #444; }
+    </style>
+  </head>
+  <body>
+    <div class="brand">${String(settings.appName ?? 'POS')}</div>
+    <div class="meta"><strong>Order #</strong> ${String(orderNo)}</div>
+    <div class="meta"><strong>Type</strong> ${String(tableLabel)}</div>
+    <div class="meta"><strong>Issued</strong> ${String(issuedAt)}</div>
+    <div class="divider"></div>
+    <table>${itemRows}</table>
+    <div class="divider"></div>
+    <div class="footer">Preparation Ticket</div>
+  </body>
+</html>`;
+    const w = window.open('', '_blank', 'width=420,height=640');
+    if (!w) return;
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    w.print();
   };
 
   const isAdminOperator = user?.role === 'owner' || user?.role === 'manager';
@@ -1973,11 +2135,11 @@ export default function POSTerminal() {
                       ) : (
                         <div className="space-y-2">
                           {incomingCalls.slice(0, 25).map((c) => (
-                            <Card key={`call-${c.id}`} className="p-3 border-amber-500/30 bg-amber-500/5">
+                            <Card key={`call-${c.id}`} className={cn('p-3', c.kind === 'payment_request' ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-amber-500/30 bg-amber-500/5')}>
                               <div className="flex items-start justify-between gap-3">
                                 <div>
                                   <div className="font-semibold">
-                                    Waiter call • {c.tableLabel ?? (c.tableNo ? `Table ${c.tableNo}` : 'Table')}
+                                    {c.kind === 'payment_request' ? 'Bill request' : 'Waiter call'} • {c.tableLabel ?? (c.tableNo ? `Table ${c.tableNo}` : 'Table')}
                                   </div>
                                   <div className="text-xs text-muted-foreground">
                                     {new Date(c.createdAt).toLocaleTimeString()}
@@ -2370,20 +2532,20 @@ export default function POSTerminal() {
                   <div className="mb-3 rounded-lg border bg-muted/30 p-3 text-sm">
                     <div className="font-medium">No menu items available.</div>
                     <div className="text-xs text-muted-foreground mt-1">
-                      Add items in POS Menu to start taking orders.
+                      Add items in POS Menu Manager to start taking orders.
                     </div>
                     <div className="mt-2 flex gap-2">
-                      <Button size="sm" variant="outline" onClick={() => navigate('/app/pos/menu')}>Open POS Menu</Button>
+                      <Button size="sm" variant="outline" onClick={() => navigate('/app/pos/menu')}>Open POS Menu Manager</Button>
                     </div>
                   </div>
                 ) : items.length === 1 ? (
                   <div className="mb-3 rounded-lg border bg-muted/30 p-3 text-sm">
                     <div className="font-medium">Only one menu item found.</div>
                     <div className="text-xs text-muted-foreground mt-1">
-                      Add more items in POS Menu for a complete selection.
+                      Add more items in POS Menu Manager for a complete selection.
                     </div>
                     <div className="mt-2 flex gap-2">
-                      <Button size="sm" variant="outline" onClick={() => navigate('/app/pos/menu')}>Open POS Menu</Button>
+                      <Button size="sm" variant="outline" onClick={() => navigate('/app/pos/menu')}>Open POS Menu Manager</Button>
                     </div>
                   </div>
                 ) : null}
@@ -2473,6 +2635,11 @@ export default function POSTerminal() {
                       {item.quantity} × {formatMoneyPrecise(item.unitPrice, 2)}
                       {(item.discountPercent ?? 0) > 0 ? `  (−${item.discountPercent}%)` : ''}
                     </p>
+                    <div className="mt-1">
+                      <Badge variant={getItemPrepRoute(item.menuItemId) === 'direct_sale' ? 'secondary' : 'outline'}>
+                        {getItemPrepRoute(item.menuItemId) === 'direct_sale' ? 'Direct Sale' : (item.sentToKitchen ? 'Kitchen Sent' : 'Kitchen Item')}
+                      </Badge>
+                    </div>
                     {(item.modifiers?.length ?? 0) > 0 && (
                       <p className="text-xs text-muted-foreground truncate">{item.modifiers?.join(' · ')}</p>
                     )}
@@ -2618,12 +2785,12 @@ export default function POSTerminal() {
             </div>
           </div>
 
-          <div className="mb-2">
+          <div className="mb-2 flex gap-2">
             <Button
               variant="outline"
-              className="w-full"
+              className="flex-1"
               disabled={sendKitchenBusy || orderItems.length === 0 || orderItems.every((i) => i.sentToKitchen)}
-              onClick={handleSendToKitchen}
+              onClick={() => openKitchenSendReview(false)}
             >
               {sendKitchenBusy ? (
                 <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
@@ -2632,6 +2799,110 @@ export default function POSTerminal() {
               )}
               {sendKitchenBusy ? 'Sending...' : 'Send to Kitchen'}
             </Button>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="icon" title="More actions">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-72 p-2">
+                <div className="space-y-2">
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start"
+                    disabled={sendKitchenBusy || orderItems.length === 0 || orderItems.every((i) => i.sentToKitchen) || orderType !== 'eat_in' || !selectedTable}
+                    onClick={() => openKitchenSendReview(true)}
+                  >
+                    Send & Park for Later Payment
+                  </Button>
+
+                  <div className="h-px bg-border my-2" />
+
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start"
+                    disabled={!receiptOrder}
+                    onClick={() => setShowReceipt(true)}
+                  >
+                    Print Receipt
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start"
+                    onClick={() => setShowSessionReceipts(true)}
+                  >
+                    <Receipt className="h-4 w-4 mr-2" />
+                    Session Receipts
+                  </Button>
+
+                  <div className="h-px bg-border my-2" />
+
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start"
+                    disabled={orderItems.length === 0 && !activeOrderId}
+                    onClick={presentBillForTracking}
+                  >
+                    Present Bill
+                  </Button>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start"
+                    onClick={() => setShowPaymentRequests(true)}
+                  >
+                    Payment Tracking
+                  </Button>
+
+                  <div className="h-px bg-border my-2" />
+
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start"
+                    disabled={orderItems.length === 0}
+                    onClick={printPreparationTicket}
+                  >
+                    Print Preparation Ticket
+                  </Button>
+
+                  <div className="h-px bg-border my-2" />
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      variant="outline"
+                      className="w-full justify-start"
+                      disabled={orderItems.length === 0}
+                      onClick={() => setSelectedOrderItemId((prev) => prev ?? orderItems[orderItems.length - 1]?.id ?? null)}
+                    >
+                      Add
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="w-full justify-start"
+                      disabled={orderItems.length === 0}
+                      onClick={() => setSelectedOrderItemId((prev) => prev ?? orderItems[orderItems.length - 1]?.id ?? null)}
+                    >
+                      Discount
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="w-full justify-start"
+                      disabled={orderItems.length === 0}
+                      onClick={() => setShowCoupon(true)}
+                    >
+                      Coupon
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="w-full justify-start"
+                      disabled={orderItems.length === 0}
+                      onClick={() => setSelectedOrderItemId((prev) => prev ?? orderItems[orderItems.length - 1]?.id ?? null)}
+                    >
+                      Note
+                    </Button>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
           </div>
 
           <div className="grid grid-cols-2 gap-2">
@@ -2648,64 +2919,6 @@ export default function POSTerminal() {
               onClick={() => setShowPayment(true)}
             >
               Proceed
-            </Button>
-          </div>
-
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <Button
-              variant="outline"
-              className="w-full"
-              disabled={!receiptOrder}
-              onClick={() => setShowReceipt(true)}
-            >
-              Print Receipt
-            </Button>
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={() => setShowSessionReceipts(true)}
-            >
-              <Receipt className="h-4 w-4 mr-2" />
-              Session Receipts
-            </Button>
-          </div>
-
-          <div className="mt-2 grid grid-cols-4 gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="justify-start"
-              disabled={orderItems.length === 0}
-              onClick={() => setSelectedOrderItemId((prev) => prev ?? orderItems[orderItems.length - 1]?.id ?? null)}
-            >
-              Add
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="justify-start"
-              disabled={orderItems.length === 0}
-              onClick={() => setSelectedOrderItemId((prev) => prev ?? orderItems[orderItems.length - 1]?.id ?? null)}
-            >
-              Discount
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="justify-start"
-              disabled={orderItems.length === 0}
-              onClick={() => setShowCoupon(true)}
-            >
-              Coupon
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="justify-start"
-              disabled={orderItems.length === 0}
-              onClick={() => setSelectedOrderItemId((prev) => prev ?? orderItems[orderItems.length - 1]?.id ?? null)}
-            >
-              Note
             </Button>
           </div>
           
@@ -2733,6 +2946,54 @@ export default function POSTerminal() {
         onComplete={handlePaymentComplete}
       />
 
+      <Dialog open={showKitchenSendReview} onOpenChange={setShowKitchenSendReview}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Review Kitchen Send</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <div className="rounded-md border p-3">
+              <div className="font-medium">Will send to kitchen ({unsentKitchenItems.length})</div>
+              {unsentKitchenItems.length === 0 ? (
+                <div className="mt-1 text-muted-foreground">No kitchen-routed items in this order.</div>
+              ) : (
+                <div className="mt-1 space-y-1">
+                  {unsentKitchenItems.map((it) => (
+                    <div key={`k-${it.id}`} className="text-muted-foreground">{it.quantity}x {it.menuItemName}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="rounded-md border p-3">
+              <div className="font-medium">Direct sale / no kitchen ({unsentDirectSaleItems.length})</div>
+              {unsentDirectSaleItems.length === 0 ? (
+                <div className="mt-1 text-muted-foreground">None</div>
+              ) : (
+                <div className="mt-1 space-y-1">
+                  {unsentDirectSaleItems.map((it) => (
+                    <div key={`d-${it.id}`} className="text-muted-foreground">{it.quantity}x {it.menuItemName}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              This review does not remove any items from the order. It only confirms routing.
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowKitchenSendReview(false)}>Cancel</Button>
+              <Button
+                onClick={() => {
+                  setShowKitchenSendReview(false);
+                  void handleSendToKitchen({ parkAfterSend: reviewParkAfterSend });
+                }}
+              >
+                {reviewParkAfterSend ? 'Confirm Send & Park' : 'Confirm Send'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Payment Requests (from Tables -> Till) */}
       <Dialog open={showPaymentRequests} onOpenChange={setShowPaymentRequests}>
         <DialogContent className="max-w-lg">
@@ -2751,6 +3012,11 @@ export default function POSTerminal() {
                       <div className="text-xs text-muted-foreground">
                         Requested by {r.requestedBy ?? 'staff'} • {new Date(r.createdAt).toLocaleTimeString()}
                       </div>
+                      <div className="mt-1">
+                        <Badge variant={String(r.note ?? '').toLowerCase().includes('presented') ? 'default' : 'secondary'}>
+                          {String(r.note ?? '').trim() || 'Payment tracking'}
+                        </Badge>
+                      </div>
                       <div className="text-sm mt-1">
                         Total: <span className="font-mono">{formatMoneyPrecise(Number(r.total), 2)}</span>
                       </div>
@@ -2761,7 +3027,6 @@ export default function POSTerminal() {
                         onClick={() => {
                           const o = findOrderById(r.orderId);
                           if (o) loadOrderToTerminal(o, { openPayment: true });
-                          resolvePosPaymentRequest(r.id);
                           setShowPaymentRequests(false);
                         }}
                       >

@@ -23,6 +23,18 @@ let currentBrandId: string | null = getActiveBrandId();
 
 const useRemote = isSupabaseConfigured() && supabase;
 let remoteInitStarted = false;
+let erpSchemaUnsupported = false;
+
+function isErpSchemaUnsupportedError(e: unknown) {
+  const code = String((e as any)?.code ?? (e as any)?.error?.code ?? '');
+  const msg = String((e as any)?.message ?? (e as any)?.error?.message ?? '');
+  const hint = String((e as any)?.hint ?? (e as any)?.error?.hint ?? '');
+  // Supabase/PostgREST returns PGRST106 when a schema is not exposed.
+  if (code === 'PGRST106') return true;
+  if (/Invalid schema:\s*erp/i.test(msg)) return true;
+  if (/Only the following schemas are exposed/i.test(hint)) return true;
+  return false;
+}
 
 function resetForBrand(nextBrandId: string | null) {
   currentBrandId = nextBrandId;
@@ -74,11 +86,19 @@ async function refreshFromSupabase() {
       // Map products to menu items. Expect `products` to have `id, code, name, category_id, base_price`.
       // include image_storage_path and description so UI can display images and details
       // avoid selecting `image_url` (may not exist) and avoid aliasing to keep PostgREST happy
-      const resItems = await supabase!
+      let resItems = await supabase!
         .from('products')
-        .select('id,code,name,category_id,department_id,base_price,image_storage_path,description,physical_stock_item_id')
+        .select('id,code,name,category_id,department_id,base_price,image_storage_path,description,physical_stock_item_id,prep_route')
         .eq('brand_id', brandId);
-      if (resItems.error) throw resItems.error;
+      if (resItems.error) {
+        // Backward compatibility for environments where prep_route is not migrated yet.
+        const legacy = await supabase!
+          .from('products')
+          .select('id,code,name,category_id,department_id,base_price,image_storage_path,description,physical_stock_item_id')
+          .eq('brand_id', brandId);
+        if (legacy.error) throw legacy.error;
+        resItems = legacy as any;
+      }
 
       // Normalize rows to the expected shape used below
       catRows = (resCats.data ?? []).map((r: any) => ({ id: r.id, name: r.name, color: null, sort_order: 0 }));
@@ -97,24 +117,35 @@ async function refreshFromSupabase() {
         modifier_groups: null,
         track_inventory: false,
         physical_stock_item_id: p.physical_stock_item_id ?? null,
+        prep_route: p.prep_route ?? 'kitchen',
       }));
     } catch (pubErr) {
       console.warn('[posMenuStore] refresh using public tables failed, retrying legacy erp schema', pubErr);
       try {
+        if (erpSchemaUnsupported) throw pubErr;
         const resCats = await client
           .from('pos_categories')
           .select('id,name,color,sort_order')
           .eq('brand_id', brandId)
           .order('sort_order', { ascending: true });
         if (resCats.error) throw resCats.error;
-        const resItems = await client
+        let resItems = await client
           .from('pos_menu_items')
-          .select('id,code,name,category_id,price,cost,image,is_available,modifier_groups,track_inventory')
+          .select('id,code,name,category_id,price,cost,image,is_available,modifier_groups,track_inventory,physical_stock_item_id,prep_route')
           .eq('brand_id', brandId);
-        if (resItems.error) throw resItems.error;
+        if (resItems.error) {
+          // Backward compatibility for environments where prep_route is not migrated yet.
+          const legacy = await client
+            .from('pos_menu_items')
+            .select('id,code,name,category_id,price,cost,image,is_available,modifier_groups,track_inventory,physical_stock_item_id')
+            .eq('brand_id', brandId);
+          if (legacy.error) throw legacy.error;
+          resItems = legacy as any;
+        }
         catRows = resCats.data;
         itemRows = resItems.data;
       } catch (firstErr) {
+        if (isErpSchemaUnsupportedError(firstErr)) erpSchemaUnsupported = true;
         throw firstErr;
       }
     }
@@ -138,6 +169,7 @@ async function refreshFromSupabase() {
       modifierGroups: ((r as any).modifier_groups as string[] | null) ?? undefined,
       trackInventory: Boolean((r as any).track_inventory),
       physicalStockItemId: (r as any).physical_stock_item_id ?? undefined,
+      prepRoute: ((r as any).prep_route === 'direct_sale' ? 'direct_sale' : 'kitchen'),
     }));
 
     cachedState = { version: 1, categories, items };
@@ -290,6 +322,7 @@ export function upsertPosCategory(category: POSCategory) {
     try {
       // Try erp.pos_categories first, fall back to public.categories
       try {
+        if (erpSchemaUnsupported) throw new Error('erp schema disabled');
         const client = supabase!.schema('erp');
         const { data, error, status } = await client.from('pos_categories').upsert({
           id: category.id,
@@ -303,6 +336,7 @@ export function upsertPosCategory(category: POSCategory) {
         await refreshFromSupabase();
         return;
       } catch (e) {
+        if (isErpSchemaUnsupportedError(e)) erpSchemaUnsupported = true;
         // Try public.categories
       }
 
@@ -417,6 +451,7 @@ export async function upsertPosMenuItem(item: POSMenuItem): Promise<void> {
   try {
     // Try legacy erp schema first
     try {
+      if (erpSchemaUnsupported) throw new Error('erp schema disabled');
       const client = supabase!.schema('erp');
       const clientPayload: any = {
         id: item.id,
@@ -431,17 +466,26 @@ export async function upsertPosMenuItem(item: POSMenuItem): Promise<void> {
         is_available: item.isAvailable,
         modifier_groups: item.modifierGroups ?? null,
         track_inventory: item.trackInventory ?? false,
+        physical_stock_item_id: item.physicalStockItemId ?? null,
+        prep_route: item.prepRoute ?? 'kitchen',
         updated_at: new Date().toISOString(),
       };
 
-      const { data, error, status } = await client.from('pos_menu_items').upsert(clientPayload).select();
-      if (error) throw { source: 'erp', status, error, data };
+      let upsertResult = await client.from('pos_menu_items').upsert(clientPayload).select();
+      if (upsertResult.error) {
+        // Backward compatibility for environments where prep_route is not migrated yet.
+        const legacyPayload = { ...clientPayload } as any;
+        delete legacyPayload.prep_route;
+        upsertResult = await client.from('pos_menu_items').upsert(legacyPayload).select();
+      }
+      if (upsertResult.error) throw { source: 'erp', status: upsertResult.status, error: upsertResult.error, data: upsertResult.data };
       await refreshFromSupabase();
       return;
     } catch (e) {
       // If ERP schema is not exposed in this Supabase project, fall back quietly.
       const msg = String((e as any)?.error?.message ?? (e as any)?.message ?? '');
-      if (!/Invalid schema:\s*erp/i.test(msg)) {
+      if (isErpSchemaUnsupportedError(e)) erpSchemaUnsupported = true;
+      if (!/Invalid schema:\s*erp/i.test(msg) && !/erp schema disabled/i.test(msg)) {
         console.debug('[posMenuStore] erp upsert skipped, falling back to public.products', e);
       }
       // fallback to public.products
@@ -455,6 +499,7 @@ export async function upsertPosMenuItem(item: POSMenuItem): Promise<void> {
       // Always include description (nullable) to avoid sending undefined
       description: (item as any).description ?? null,
       physical_stock_item_id: (item as any).physicalStockItemId ?? null,
+      prep_route: item.prepRoute ?? 'kitchen',
     };
     if (item.image) {
       if (typeof item.image === 'string' && item.image.startsWith('http')) pubPayload.image_url = item.image;
@@ -468,6 +513,15 @@ export async function upsertPosMenuItem(item: POSMenuItem): Promise<void> {
     try {
       console.debug('[posMenuStore] upsert products payload', pubPayload);
       let { data: pubData, error: pubErr, status: pubStatus } = await supabase!.from('products').upsert(pubPayload).select();
+      if (pubErr) {
+        // Backward compatibility for environments where prep_route is not migrated yet.
+        const legacyPayload = { ...pubPayload } as any;
+        delete legacyPayload.prep_route;
+        const legacyRes = await supabase!.from('products').upsert(legacyPayload).select();
+        pubData = legacyRes.data as any;
+        pubErr = legacyRes.error as any;
+        pubStatus = legacyRes.status as any;
+      }
 
       // Handle duplicate code collisions gracefully:
       // - if same brand already has this code, update that row instead of failing

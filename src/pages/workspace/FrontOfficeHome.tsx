@@ -1,4 +1,4 @@
-import { ArrowRightLeft, BarChart3, Boxes, Grid3X3, Package, Receipt, UtensilsCrossed } from 'lucide-react';
+import { ArrowRightLeft, BarChart3, Boxes, ChefHat, Grid3X3, Package, Receipt, UtensilsCrossed } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -13,6 +13,7 @@ const tools: Array<{
   roles?: UserRole[];
 }> = [
   { label: 'POS Terminal', icon: Receipt, path: '/app/pos/terminal', permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
+  { label: 'POS Menu Manager', icon: ChefHat, path: '/app/pos/menu', permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
   { label: 'Front Office Stock', icon: Package, path: '/app/inventory/front-office-stock', permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor', 'kitchen_staff'] },
   { label: 'Stock Transfers', icon: ArrowRightLeft, path: '/app/inventory/transfer-qr', permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor'] },
   { label: 'Front Stock Take', icon: Package, path: '/app/inventory/front-stock-take', permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor'] },

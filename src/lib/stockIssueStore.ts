@@ -165,6 +165,32 @@ export class StockIssueError extends Error {
   }
 }
 
+export async function revokeStockIssueBatch(params: { brandId: string; createdAt: string; createdBy: string }) {
+  if (!isSupabaseConfigured() || !supabase) throw new StockIssueError('Service unavailable');
+  const brandId = String(params.brandId ?? '').trim();
+  const createdAt = String(params.createdAt ?? '').trim();
+  const createdBy = String(params.createdBy ?? '').trim();
+  if (!brandId) throw new StockIssueError('Missing brand id');
+  if (!createdAt) throw new StockIssueError('Missing createdAt');
+  if (!createdBy) throw new StockIssueError('Missing createdBy');
+
+  const { data, error } = await supabase.rpc('revoke_stock_issue_batch', {
+    p_brand_id: brandId,
+    p_created_at: createdAt,
+    p_created_by: createdBy,
+  } as any);
+  if (error) throw new StockIssueError(String(error.message ?? 'Revoke failed'));
+
+  const ok = Boolean((data as any)?.ok ?? false);
+  if (!ok) {
+    const reason = String((data as any)?.error ?? 'revoke_failed');
+    throw new StockIssueError(reason);
+  }
+
+  try { await fetchFromDb(); } catch {}
+  return data as any;
+}
+
 export async function createStockIssue(params: {
   brandId?: string | null;
   date: string; // YYYY-MM-DD

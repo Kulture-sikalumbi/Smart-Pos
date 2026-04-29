@@ -1,4 +1,4 @@
-import { ArrowRightLeft, BarChart3, ClipboardCheck, LayoutDashboard, Package, Receipt, Settings, ShoppingCart, Users } from 'lucide-react';
+import { ArrowRightLeft, BarChart3, ChefHat, ClipboardCheck, LayoutDashboard, Package, Receipt, Settings, ShoppingCart, Users } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -22,6 +22,7 @@ const tools: Array<{
   { label: 'Reports', icon: BarChart3, path: '/app/reports', permission: 'viewReports' },
   { label: 'Shift X/Z Reports', icon: Receipt, path: '/app/reports/shifts', permission: 'viewReports' },
   { label: 'Till Management', icon: Receipt, path: '/app/settings/tills', permission: 'manageSettings' },
+  { label: 'POS Menu Manager', icon: ChefHat, path: '/app/pos/menu', permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor'] },
   { label: 'Settings', icon: Settings, path: '/app/settings', permission: 'manageSettings' },
 ];
 

@@ -68,11 +68,13 @@ const backOfficeItems: NavItemType[] = [
   { id: 'back-reports', title: 'Reports', url: '/app/reports', icon: BarChart3, permission: 'viewReports' },
   { id: 'back-shift-reports', title: 'Shift X/Z Reports', url: '/app/reports/shifts', icon: Receipt, permission: 'viewReports' },
   { id: 'back-tills', title: 'Tills', url: '/app/settings/tills', icon: Receipt, permission: 'manageSettings' },
+  { id: 'back-pos-menu', title: 'POS Menu Manager', url: '/app/pos/menu', icon: ChefHat, permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor'] },
 ];
 
 const frontOfficeItems: NavItemType[] = [
   { id: 'front-home', title: 'Workspace Home', url: '/app/front-office', icon: ChefHat, permission: 'accessPOS' },
   { id: 'front-pos', title: 'POS Terminal', url: '/app/pos/terminal', icon: MonitorSmartphone, permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
+  { id: 'front-pos-menu', title: 'POS Menu Manager', url: '/app/pos/menu', icon: ChefHat, permission: 'accessPOS', roles: ['owner', 'manager', 'front_supervisor', 'cashier'] },
   { id: 'front-stock', title: 'Front Office Stock', url: '/app/inventory/front-office-stock', icon: Package, permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor', 'kitchen_staff'] },
   { id: 'front-transfers', title: 'Stock Transfers', url: '/app/inventory/transfer-qr', icon: ArrowRightLeft, permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor'] },
   { id: 'front-stock-take', title: 'Front Stock Take', url: '/app/inventory/front-stock-take', icon: ClipboardCheck, permission: 'viewInventory', roles: ['owner', 'manager', 'front_supervisor'] },

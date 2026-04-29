@@ -7,10 +7,12 @@ import { Button } from '@/components/ui/button';
 import { Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Trash2, Plus, Pencil, RotateCcw, Upload, Check, ChevronsUpDown } from 'lucide-react';
-import type { POSCategory, POSMenuItem } from '@/types/pos';
+import { Trash2, Plus, Pencil, RotateCcw, Upload, Check, ChevronsUpDown, CookingPot, CupSoda } from 'lucide-react';
+import type { MenuPrepRoute, POSCategory, POSMenuItem } from '@/types/pos';
 import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes, getManufacturingRecipeById } from '@/lib/manufacturingRecipeStore';
 import { getStockItemsSnapshot, subscribeStockItems } from '@/lib/stockStore';
 import { RecipeEditorDialog } from '@/pages/manufacturing/Recipes';
@@ -36,6 +38,7 @@ interface MenuItem {
   code?: string;
   description?: string;
   physicalStockItemId?: string;
+  prepRoute?: MenuPrepRoute;
 }
 
 const MenuManager: React.FC = () => {
@@ -63,6 +66,9 @@ const MenuManager: React.FC = () => {
   const [stockSuggestionsOpen, setStockSuggestionsOpen] = useState(false);
   const [nameSuggestionsOpen, setNameSuggestionsOpen] = useState(false);
   const [showUnmatchedNameHint, setShowUnmatchedNameHint] = useState(false);
+  const [routeFilter, setRouteFilter] = useState<'all' | 'kitchen' | 'direct_sale'>('all');
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const saleFrontStockOptions = useMemo(() => {
     const byId = new Map(stockItems.map((s) => [String(s.id), s] as const));
     return (frontStock ?? [])
@@ -248,6 +254,7 @@ const MenuManager: React.FC = () => {
       trackInventory: false,
       description: String((form as any).description ?? ''),
       physicalStockItemId: (form as any).physicalStockItemId ?? undefined,
+      prepRoute: ((form as any).prepRoute === 'direct_sale' ? 'direct_sale' : 'kitchen'),
     };
     // include categoryId only when explicitly provided
     if ((form as any).categoryId) payload.categoryId = String((form as any).categoryId);
@@ -308,6 +315,43 @@ const MenuManager: React.FC = () => {
     }
   };
 
+  const filteredItems = useMemo(
+    () =>
+      items.filter((item) => {
+        if (routeFilter === 'all') return true;
+        const route = String((item as any).prepRoute ?? 'kitchen');
+        return route === routeFilter;
+      }),
+    [items, routeFilter]
+  );
+
+  const applyBulkPrepRoute = async (targetRoute: MenuPrepRoute) => {
+    const ids = selectedItemIds.slice();
+    if (!ids.length) return;
+    setBulkBusy(true);
+    try {
+      const snapshot = getPosMenuItemsSnapshot();
+      for (const id of ids) {
+        const source = snapshot.find((x) => x.id === id);
+        if (!source) continue;
+        await upsertPosMenuItem({ ...source, prepRoute: targetRoute });
+      }
+      setSelectedItemIds([]);
+      toast({
+        title: 'Bulk update complete',
+        description: `${ids.length} item${ids.length === 1 ? '' : 's'} set to ${targetRoute === 'direct_sale' ? 'Direct Sale' : 'Kitchen Item'}.`,
+      });
+    } catch (e: any) {
+      toast({
+        title: 'Bulk update failed',
+        description: String(e?.message ?? 'Could not update selected items.'),
+        variant: 'destructive',
+      });
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const openAddModal = () => {
     setEditing(null);
     setForm({});
@@ -324,7 +368,7 @@ const MenuManager: React.FC = () => {
 
   return (
     <div>
-      <PageHeader title="POS Menu" description="Manage items sold at the POS" actions={<Button onClick={openAddModal}><Plus className="h-4 w-4 mr-2" />Add Menu Item</Button>} />
+      <PageHeader title="POS Menu Manager" description="Manage POS items, pricing, stock links, and preparation type" actions={<Button onClick={openAddModal}><Plus className="h-4 w-4 mr-2" />Add Menu Item</Button>} />
 
       {isLoading ? (
         <div className="flex items-center justify-center h-64 w-full">
@@ -332,8 +376,47 @@ const MenuManager: React.FC = () => {
           <span>Loading menu items…</span>
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-3">
-          {items.map((item) => {
+        <div className="space-y-3">
+          <div className="rounded-md border p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Select value={routeFilter} onValueChange={(v) => setRouteFilter(v as any)}>
+                <SelectTrigger className="w-[240px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Items</SelectItem>
+                  <SelectItem value="kitchen">Kitchen Items</SelectItem>
+                  <SelectItem value="direct_sale">Direct Sale Items</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                disabled={selectedItemIds.length === 0 || bulkBusy}
+                onClick={() => void applyBulkPrepRoute('kitchen')}
+              >
+                Mark Selected as Kitchen
+              </Button>
+              <Button
+                variant="outline"
+                disabled={selectedItemIds.length === 0 || bulkBusy}
+                onClick={() => void applyBulkPrepRoute('direct_sale')}
+              >
+                Mark Selected as Direct Sale
+              </Button>
+              <Button
+                variant="ghost"
+                disabled={selectedItemIds.length === 0 || bulkBusy}
+                onClick={() => setSelectedItemIds([])}
+              >
+                Clear Selection ({selectedItemIds.length})
+              </Button>
+            </div>
+            <div className="mt-2 text-xs text-muted-foreground">
+              Bulk update helps quickly classify many items (for example beverages) without opening each item.
+            </div>
+          </div>
+          <div className="grid grid-cols-1 gap-3">
+          {filteredItems.map((item) => {
           // Resolve image preview (storage path or remote URL)
           let imgSrc: string | undefined = undefined;
           // Find linked recipe (by matching code)
@@ -371,11 +454,24 @@ const MenuManager: React.FC = () => {
             <Card key={item.id}>
               <CardHeader>
                 <div className="flex items-start justify-between">
-                  <div>
+                  <div className="flex items-start gap-2">
+                    <Checkbox
+                      checked={selectedItemIds.includes(item.id)}
+                      onCheckedChange={(checked) => {
+                        setSelectedItemIds((prev) => {
+                          const yes = Boolean(checked);
+                          if (yes) return prev.includes(item.id) ? prev : [...prev, item.id];
+                          return prev.filter((x) => x !== item.id);
+                        });
+                      }}
+                      aria-label={`Select ${item.name}`}
+                    />
+                    <div>
                     <CardTitle className="text-sm">{item.name}</CardTitle>
                     {(item as any).code ? (
                       <div className="text-xs text-muted-foreground mt-1">Code: {(item as any).code}</div>
                     ) : null}
+                    </div>
                   </div>
                   <div className="flex items-center gap-2">
                     <Button aria-label={`Edit ${item.name}`} variant="ghost" size="icon" onClick={() => openEditModal(item as any)}><Pencil className="h-4 w-4" /></Button>
@@ -396,6 +492,14 @@ const MenuManager: React.FC = () => {
                     <div className="flex items-center justify-between gap-3">
                       <div className="text-sm font-semibold">{formatMoneyPrecise(Number(item.price), 2)}</div>
                       <div className="text-xs text-muted-foreground flex items-center gap-2">
+                        <span className={cn(
+                          'rounded-full border px-2 py-0.5',
+                          String((item as any).prepRoute ?? 'kitchen') === 'direct_sale'
+                            ? 'border-cyan-300 bg-cyan-50 text-cyan-700'
+                            : 'border-orange-300 bg-orange-50 text-orange-700'
+                        )}>
+                          {String((item as any).prepRoute ?? 'kitchen') === 'direct_sale' ? 'Direct Sale (No Kitchen)' : 'Kitchen Item'}
+                        </span>
                         <span className={cn(
                           'rounded-full border px-2 py-0.5',
                           linkedRecipe && !readyToSellLinked ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-muted-foreground/20'
@@ -427,6 +531,7 @@ const MenuManager: React.FC = () => {
             </Card>
           );
         })}
+          </div>
       </div>
       )}
 
@@ -556,6 +661,36 @@ const MenuManager: React.FC = () => {
                 This item name does not match existing ready-to-sell stock. You can keep it as custom, but link it to an existing recipe or a direct SALE stock item.
               </div>
             ) : null}
+
+            <div className="space-y-2">
+              <Label>Preparation Type</Label>
+              <RadioGroup
+                value={String((form as any).prepRoute ?? 'kitchen')}
+                onValueChange={(v) => setForm({ ...form, prepRoute: v === 'direct_sale' ? 'direct_sale' : 'kitchen' })}
+                className="space-y-2"
+              >
+                <label className="flex items-start gap-2 rounded-md border p-2 cursor-pointer">
+                  <RadioGroupItem value="kitchen" id="prep-kitchen" className="mt-0.5" />
+                  <div>
+                    <div className="text-sm font-medium flex items-center gap-2">
+                      <CookingPot className="h-4 w-4 text-orange-500" />
+                      Kitchen Prepared Item
+                    </div>
+                    <div className="text-xs text-muted-foreground">Sent to kitchen for preparation when cashier uses Send to Kitchen.</div>
+                  </div>
+                </label>
+                <label className="flex items-start gap-2 rounded-md border p-2 cursor-pointer">
+                  <RadioGroupItem value="direct_sale" id="prep-direct-sale" className="mt-0.5" />
+                  <div>
+                    <div className="text-sm font-medium flex items-center gap-2">
+                      <CupSoda className="h-4 w-4 text-cyan-600" />
+                      Direct Sale Item
+                    </div>
+                    <div className="text-xs text-muted-foreground">Not sent to kitchen; still part of the same order and payment.</div>
+                  </div>
+                </label>
+              </RadioGroup>
+            </div>
 
             <div className="space-y-1">
               <Label>Category</Label>

@@ -46,11 +46,13 @@ import {
   subscribeStockIssuesLoading,
   getStockIssuesLoadingSnapshot,
   ensureStockIssuesLoaded,
+  revokeStockIssueBatch,
 } from '@/lib/stockIssueStore';
 import { getActiveBrandId } from '@/lib/activeBrand';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
 import { getStockItemById } from '@/lib/stockStore';
+import { refreshStockItems, subscribeToRealtimeStockItems } from '@/lib/stockStore';
 
 type DraftIssueLine = {
   id: string;
@@ -135,7 +137,10 @@ export default function StockIssues() {
   const loading = useSyncExternalStore(subscribeStockIssuesLoading, getStockIssuesLoadingSnapshot);
 
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [previewLines, setPreviewLines] = useState<any[]>([]);
   const [isSaving, setIsSaving] = useState(false);
+  const [isRevoking, setIsRevoking] = useState<string | null>(null);
   const submitLockRef = React.useRef(false);
   const [issueDate, setIssueDate] = useState<string>(dateKeyLocal(new Date()));
   const [createdBy, setCreatedBy] = useState('System');
@@ -316,20 +321,26 @@ export default function StockIssues() {
     void ensureStockIssuesLoaded();
   }, []);
 
+  // Keep stock counts aligned with DB (avoids stale cache vs RPC validation mismatch).
+  useEffect(() => {
+    void refreshStockItems();
+    const unsub = subscribeToRealtimeStockItems();
+    return () => {
+      try { if (unsub) unsub(); } catch {}
+    };
+  }, []);
+
   function addLine() {
-    setDraftLines((prev) => [...prev, { id: `dl-${crypto.randomUUID()}`, stockItemId: '', qty: '', inputUnit: undefined, issueType: 'Sale', notes: '' }]);
+    // Prepend new line so the cashier doesn't need to scroll down.
+    setDraftLines((prev) => [{ id: `dl-${crypto.randomUUID()}`, stockItemId: '', qty: '', inputUnit: undefined, issueType: 'Sale', notes: '' }, ...prev]);
   }
 
   function removeLine(id: string) {
     setDraftLines((prev) => prev.filter((l) => l.id !== id));
   }
 
-  async function confirmIssue() {
-    if (!validated.canConfirm) return;
-    if (submitLockRef.current) return;
-    submitLockRef.current = true;
-    const brandId = getActiveBrandId();
-    const payloadLines = validated.validLines.map((l: any) => {
+  function buildPayloadLines() {
+    return validated.validLines.map((l: any) => {
       const unitCost = l.item?.currentCost ?? 0;
       const totalValue = Math.round((Number(l.baseQty ?? 0) * unitCost + Number.EPSILON) * 100) / 100;
       return {
@@ -340,11 +351,34 @@ export default function StockIssues() {
         unit_cost_at_time: unitCost,
         total_value_lost: totalValue,
         notes: l.notes ?? null,
+        _ui: {
+          code: l.item?.code ?? '',
+          name: l.item?.name ?? '',
+          unit: l.item ? baseUnitLabel(l.item.unitType) : '',
+        },
       };
     });
+  }
+
+  async function openPreview() {
+    if (!validated.canConfirm) return;
+    // Refresh stock right before preview to reduce stale-cache surprises.
+    try { await refreshStockItems(); } catch {}
+    setPreviewLines(buildPayloadLines());
+    setIsPreviewOpen(true);
+  }
+
+  async function confirmIssueFromPreview() {
+    if (!validated.canConfirm) return;
+    if (submitLockRef.current) return;
+    submitLockRef.current = true;
+    const brandId = getActiveBrandId();
+    const payloadLines = buildPayloadLines();
 
     setIsSaving(true);
     try {
+      // Refresh stock right before issuing (server will validate, but this keeps UI in sync).
+      try { await refreshStockItems(); } catch {}
       if (!currentUserId) {
         toast({ title: 'No active user', description: 'Select an operator before submitting.', variant: 'destructive' });
         return;
@@ -357,11 +391,11 @@ export default function StockIssues() {
       } as any);
 
       toast({ title: 'Stock issued', description: `Saved ${payloadLines.length} issue(s).` });
+      setIsPreviewOpen(false);
       setIsAddDialogOpen(false);
       resetDialog();
     } catch (e) {
       const msg = e instanceof StockIssueError ? e.message : (e as Error)?.message ?? 'Failed to create issue.';
-      // Specific handling for DB-reported insufficiency (user-friendly toast)
       if (/insufficient stock|insufficient|low stock/i.test(String(msg))) {
         toast({ title: 'Insufficient stock', description: msg, variant: 'destructive' });
       } else if (/42501|permission|forbid|forbidden|403/i.test(String(msg))) {
@@ -601,7 +635,7 @@ export default function StockIssues() {
                 </Button>
                 <Button
                   type="button"
-                  onClick={confirmIssue}
+                  onClick={openPreview}
                   disabled={!validated.canConfirm || isSaving || !currentUserId}
                   aria-busy={isSaving}
                   className={cn(
@@ -626,6 +660,56 @@ export default function StockIssues() {
           </Dialog>
         }
       />
+
+      <Dialog open={isPreviewOpen} onOpenChange={setIsPreviewOpen}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Preview Stock Issue</DialogTitle>
+            <DialogDescription>
+              Review the items and quantities before saving. You can undo within 5 minutes after saving.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-md border p-3">
+              <div className="text-sm font-medium">Summary</div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                Date: {issueDate} • Created by: {createdBy} • Lines: {previewLines.length}
+              </div>
+            </div>
+            <div className="rounded-md border overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Item</TableHead>
+                    <TableHead>Issue Type</TableHead>
+                    <TableHead className="text-right">Qty</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {previewLines.map((l: any) => (
+                    <TableRow key={l.id}>
+                      <TableCell>
+                        <div className="font-medium">{l._ui?.code ? `${l._ui.code} • ` : ''}{l._ui?.name ?? ''}</div>
+                      </TableCell>
+                      <TableCell>{String(l.issue_type ?? '')}</TableCell>
+                      <TableCell className="text-right">{Number(l.qty_issued ?? 0).toFixed(2)} {l._ui?.unit ?? ''}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              Warning: Saving will immediately update stock. Use Undo only if you made a mistake.
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsPreviewOpen(false)} disabled={isSaving}>Undo</Button>
+            <Button onClick={confirmIssueFromPreview} disabled={isSaving || !currentUserId}>
+              {isSaving ? 'Saving...' : 'Continue & Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* loading spinner moved below the search (cards area) */}
 
@@ -660,10 +744,18 @@ export default function StockIssues() {
           const date = grp.createdAt ?? first.createdAt ?? first.date ?? '';
           const creatorId = grp.createdById ?? first.createdBy ?? first.created_by ?? '';
           const creator = userNameById.get(String(creatorId)) ?? (String(creatorId) === String(currentUserId) ? currentUserFullName : String(creatorId));
-          const issueType = grp.lines.length === 1 ? (first.issueType ?? first.issue_type) : (() => {
-            const types = Array.from(new Set(grp.lines.map((l: any) => (l.issueType ?? l.issue_type))));
-            return types.length === 1 ? types[0] : 'Multiple';
+          const issueType = (() => {
+            const rawTypes = grp.lines.map((l: any) => String(l.issueType ?? l.issue_type ?? '').trim()).filter(Boolean);
+            const unique = Array.from(new Set(rawTypes));
+            if (unique.length <= 1) return unique[0] ?? String(first.issueType ?? first.issue_type ?? '');
+            // If multiple types exist, show a compact combined label (e.g. "Sale + Manufacturing").
+            // If too many, fall back to "Transfer".
+            const label = unique.slice(0, 3).join(' + ');
+            return unique.length <= 3 ? label : 'Transfer';
           })();
+          const createdAtIso = String(grp.createdAt ?? '');
+          const createdAtMs = createdAtIso ? new Date(createdAtIso).getTime() : NaN;
+          const canRevoke = Number.isFinite(createdAtMs) && (Date.now() - createdAtMs) <= 5 * 60 * 1000;
 
           return (
             <Card key={grp.key}>
@@ -681,9 +773,46 @@ export default function StockIssues() {
                               </div>
                               <p className="text-sm text-white/80">By {creator}</p>
                   </div>
-                  <div className="text-right">
-                    <p className="text-sm text-muted-foreground">Value</p>
-                          <p className="font-medium">{formatMoneyPrecise(Number(grp.totalValue ?? 0), 2)}</p>
+                  <div className="flex items-center gap-3">
+                    {canRevoke ? (
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={Boolean(isRevoking)}
+                        onClick={async () => {
+                          try {
+                            const brandId = String(getActiveBrandId() ?? '');
+                            if (!brandId) {
+                              toast({ title: 'No active brand', description: 'Select a brand first.', variant: 'destructive' });
+                              return;
+                            }
+                            setIsRevoking(grp.key);
+                            const res = await revokeStockIssueBatch({
+                              brandId,
+                              createdAt: createdAtIso,
+                              createdBy: String(grp.createdById ?? ''),
+                            });
+                            try { await refreshStockItems(); } catch {}
+                            toast({ title: 'Issue revoked', description: `Reverted ${Number((res as any)?.revoked_lines ?? 0) || grp.lines.length} line(s).` });
+                          } catch (e: any) {
+                            const msg = String(e?.message ?? e ?? 'Revoke failed');
+                            toast({
+                              title: 'Cannot revoke',
+                              description: msg === 'revoke_window_expired' ? 'Undo window expired (5 minutes).' : msg,
+                              variant: 'destructive',
+                            });
+                          } finally {
+                            setIsRevoking(null);
+                          }
+                        }}
+                      >
+                        {isRevoking === grp.key ? 'Revoking...' : 'Undo (5 min)'}
+                      </Button>
+                    ) : null}
+                    <div className="text-right">
+                      <p className="text-sm text-muted-foreground">Value</p>
+                      <p className="font-medium">{formatMoneyPrecise(Number(grp.totalValue ?? 0), 2)}</p>
+                    </div>
                   </div>
                 </div>
 
@@ -693,11 +822,19 @@ export default function StockIssues() {
                     const liCode = liItem?.code ?? line.stockItemId;
                     const liName = liItem?.name ?? '';
                     const liUnit = liItem ? baseUnitLabel(liItem.unitType) : '';
+                    const liType = String(line.issueType ?? line.issue_type ?? '').trim();
                     return (
                       <div key={line.id} className="grid grid-cols-1 sm:grid-cols-4 gap-4">
                         <div>
                           <div className="text-xs text-muted-foreground">Item</div>
                           <div className="font-medium">{liCode} • {liName}</div>
+                          {liType ? (
+                            <div className="mt-1">
+                              <span className="inline-flex items-center px-2 py-0.5 rounded bg-muted text-foreground text-[11px] font-semibold border">
+                                {liType}
+                              </span>
+                            </div>
+                          ) : null}
                         </div>
                         <div>
                           <div className="text-xs text-muted-foreground">Qty Issued</div>

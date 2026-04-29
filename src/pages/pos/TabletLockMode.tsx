@@ -283,6 +283,30 @@ export default function TabletLockMode() {
     }
   };
 
+  const requestBill = async () => {
+    if (!supabase) return;
+    setSubmitMessage(null);
+    try {
+      const key = `bill-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      const { data, error } = await supabase.rpc('tablet_request_bill', {
+        p_device_id: deviceId,
+        p_submission_key: key,
+      });
+      if (error) {
+        setSubmitMessage(String(error.message ?? 'Unable to request bill.'));
+        return;
+      }
+      const ok = Boolean((data as any)?.ok ?? false);
+      if (!ok) {
+        setSubmitMessage(String((data as any)?.error ?? 'Unable to request bill.'));
+        return;
+      }
+      setSubmitMessage('Bill requested. Cashier will attend shortly.');
+    } catch (e: any) {
+      setSubmitMessage(e?.message ?? 'Unable to request bill.');
+    }
+  };
+
   useEffect(() => {
     if (!supabase) return;
     const brandId = String(rows[0]?.brand_id ?? '').trim();
@@ -354,6 +378,14 @@ export default function TabletLockMode() {
               >
                 <BellRing className="h-4 w-4 mr-2" />
                 Call Waiter
+              </Button>
+              <Button
+                variant="outline"
+                onClick={requestBill}
+                disabled={loading || submitBusy || !tableNo}
+                className="min-w-[120px]"
+              >
+                Request Bill
               </Button>
             </div>
           </CardContent>
