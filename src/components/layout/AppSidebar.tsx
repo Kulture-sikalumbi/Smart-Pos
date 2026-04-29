@@ -110,10 +110,13 @@ export function AppSidebar() {
   };
 
   const activeRole = (user?.role ?? 'cashier') as UserRole;
+  const isWorkspaceHomePage = location.pathname === '/app/back-office' || location.pathname === '/app/front-office';
   const visibleItems = useMemo(() => {
     const source = workspace === 'back' ? backOfficeItems : frontOfficeItems;
-    return source.filter((item) => hasPermission(item.permission) && (!item.roles || item.roles.includes(activeRole)));
-  }, [workspace, hasPermission, activeRole]);
+    const filtered = source.filter((item) => hasPermission(item.permission) && (!item.roles || item.roles.includes(activeRole)));
+    if (!isWorkspaceHomePage) return filtered;
+    return filtered.filter((item) => item.id === (workspace === 'back' ? 'back-home' : 'front-home'));
+  }, [workspace, hasPermission, activeRole, isWorkspaceHomePage]);
 
   const NavItem = ({ item }: { item: NavItemType }) => {
     const disabled = !hasBrand;

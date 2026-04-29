@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { Users, Clock, DollarSign, BellRing } from 'lucide-react';
+import { Users, Clock, DollarSign, BellRing, QrCode, RefreshCw } from 'lucide-react';
 import { PageHeader } from '@/components/common/PageComponents';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -17,6 +17,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabaseClient';
 import { Input } from '@/components/ui/input';
 import { refreshRestaurantTables } from '@/lib/restaurantTablesStore';
+import { generateQrDataUrl } from '@/lib/qr';
 
 const STATUS_COLORS: Record<TableStatus, string> = {
   available: 'bg-green-500/20 border-green-500 text-green-700 dark:text-green-400',
@@ -54,8 +55,14 @@ export default function TableManagement() {
   const [selectedTabletTableNo, setSelectedTabletTableNo] = useState<string>('');
   const [tabletSetupMessage, setTabletSetupMessage] = useState<string | null>(null);
   const [tabletSetupError, setTabletSetupError] = useState<string | null>(null);
+  const [pairingBusy, setPairingBusy] = useState(false);
+  const [pairingError, setPairingError] = useState<string | null>(null);
+  const [pairingLink, setPairingLink] = useState<string>('');
+  const [pairingQrDataUrl, setPairingQrDataUrl] = useState<string>('');
+  const [pairingExpiresAt, setPairingExpiresAt] = useState<string | null>(null);
 
   const TABLET_DEVICE_ID_KEY = 'pmx.tablet.deviceId.v1';
+  const TABLET_KIOSK_ENABLED_KEY = 'pmx.tablet.kiosk.enabled.v1';
   const getOrCreateTabletDeviceId = () => {
     try {
       const existing = localStorage.getItem(TABLET_DEVICE_ID_KEY);
@@ -133,6 +140,46 @@ export default function TableManagement() {
     if (!firstSetupCandidate) return;
     setSelectedTabletTableNo(firstSetupCandidate);
   }, [firstSetupCandidate, selectedTabletTableNo]);
+
+  const generatePairingQr = async () => {
+    if (!supabase || !brandId) return;
+    setPairingBusy(true);
+    setPairingError(null);
+    try {
+      const { data, error } = await supabase.rpc('issue_tablet_enrollment_token', {
+        p_brand_id: brandId,
+        p_ttl_seconds: 180,
+      });
+      if (error) throw error;
+      const ok = Boolean((data as any)?.ok ?? false);
+      if (!ok) {
+        const reason = String((data as any)?.error ?? 'unable_to_issue_token');
+        if (reason === 'not_allowed') {
+          setPairingError('Only the brand owner can issue setup QR links.');
+        } else {
+          setPairingError('Unable to issue tablet setup QR.');
+        }
+        return;
+      }
+      const setupUrl = String((data as any)?.setup_url ?? '').trim();
+      const nextLink = setupUrl
+        ? new URL(setupUrl, window.location.origin).toString()
+        : '';
+      if (!nextLink) {
+        setPairingError('Setup link was empty. Try again.');
+        return;
+      }
+      const nextQrDataUrl = await generateQrDataUrl(nextLink);
+      setPairingLink(nextLink);
+      setPairingQrDataUrl(nextQrDataUrl);
+      const expiresRaw = String((data as any)?.expires_at ?? '').trim();
+      setPairingExpiresAt(expiresRaw || null);
+    } catch (e: any) {
+      setPairingError(e?.message ?? 'Unable to issue tablet setup QR.');
+    } finally {
+      setPairingBusy(false);
+    }
+  };
   
   const handleTableClick = (table: TableType) => {
     if (table.status === 'available') {
@@ -304,8 +351,13 @@ export default function TableManagement() {
                           return;
                         }
                         setTabletSetupMessage('Done. Entering kiosk mode...');
+                        try {
+                          localStorage.setItem(TABLET_KIOSK_ENABLED_KEY, '1');
+                        } catch {
+                          // ignore local storage write issues
+                        }
                         await loadTabletAssignments();
-                        navigate('/tablet-lock');
+                        navigate('/tablet-lock?kiosk=1');
                       } catch (e: any) {
                         setTabletSetupError(e?.message ?? 'Unable to set up this device.');
                       } finally {
@@ -324,6 +376,52 @@ export default function TableManagement() {
                 ) : null}
                 {tabletSetupError ? <div className="text-sm text-destructive">{tabletSetupError}</div> : null}
                 {tabletSetupMessage ? <div className="text-sm text-emerald-600">{tabletSetupMessage}</div> : null}
+              </CardContent>
+            </Card>
+          ) : null}
+          {canTabletSetup ? (
+            <Card>
+              <CardContent className="p-4 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-medium">Pair Tablet via QR</div>
+                    <div className="text-xs text-muted-foreground">
+                      Scan with the customer tablet to open secure kiosk enrollment.
+                    </div>
+                  </div>
+                  <Button onClick={() => void generatePairingQr()} disabled={pairingBusy || !brandId}>
+                    {pairingBusy ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 mr-2 animate-spin" /> Generating...
+                      </>
+                    ) : (
+                      <>
+                        <QrCode className="h-4 w-4 mr-2" /> Generate QR
+                      </>
+                    )}
+                  </Button>
+                </div>
+                {pairingQrDataUrl ? (
+                  <div className="rounded-md border p-3 bg-muted/30 space-y-2">
+                    <div className="flex flex-col items-center gap-2">
+                      <img src={pairingQrDataUrl} alt="Tablet enrollment QR" className="h-48 w-48 rounded-md border bg-white p-2" />
+                      <div className="text-xs text-muted-foreground text-center">
+                        This QR expires quickly for security.
+                      </div>
+                      {pairingExpiresAt ? (
+                        <div className="text-xs text-muted-foreground">
+                          Expires at {new Date(pairingExpiresAt).toLocaleTimeString()}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground break-all">{pairingLink}</div>
+                  </div>
+                ) : (
+                  <div className="text-xs text-muted-foreground">
+                    Generate a QR when a new tablet needs setup.
+                  </div>
+                )}
+                {pairingError ? <div className="text-sm text-destructive">{pairingError}</div> : null}
               </CardContent>
             </Card>
           ) : null}

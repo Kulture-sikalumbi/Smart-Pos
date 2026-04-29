@@ -45,6 +45,7 @@ import GlobalReceiptDemo from './pages/pos/GlobalReceiptDemo';
 import SelfOrder from './pages/pos/SelfOrder';
 import TableQrCodes from './pages/pos/TableQrCodes';
 import TabletLockMode from './pages/pos/TabletLockMode';
+import TabletEnrollment from './pages/pos/TabletEnrollment';
 import Hub from './pages/Hub';
 import BackOfficeHome from './pages/workspace/BackOfficeHome';
 import FrontOfficeHome from './pages/workspace/FrontOfficeHome';
@@ -201,6 +202,7 @@ const App = () => {
 
                   <Route path="/hub" element={<ProtectedRoute><Hub /></ProtectedRoute>} />
                   <Route path="/tablet-lock" element={<TabletLockMode />} />
+                  <Route path="/tablet-enroll" element={<TabletEnrollment />} />
                   <Route path="/app" element={<ProtectedRoute><MainLayout /></ProtectedRoute>}>
                     <Route index element={<Navigate to="/hub" replace />} />
                     <Route path="dashboard" element={<Dashboard />} />

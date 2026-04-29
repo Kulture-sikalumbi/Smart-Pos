@@ -4,10 +4,13 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { supabase } from '@/lib/supabaseClient';
 import { useCurrency } from '@/contexts/CurrencyContext';
-import { RefreshCw, BellRing, ShoppingCart, Sparkles } from 'lucide-react';
+import { RefreshCw, BellRing, ShoppingCart, Sparkles, ShieldCheck } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useNavigate } from 'react-router-dom';
+import { useInstallPrompt } from '@/components/common/InstallPrompt';
 
 type TabletMenuRow = {
   brand_id: string;
@@ -32,6 +35,8 @@ type TabletCartItem = {
 };
 
 const TABLET_DEVICE_ID_KEY = 'pmx.tablet.deviceId.v1';
+const ENROLLMENT_SESSION_KEY = 'pmx.tablet.enrollment.session.v1';
+const TABLET_KIOSK_ENABLED_KEY = 'pmx.tablet.kiosk.enabled.v1';
 
 function getOrCreateTabletDeviceId() {
   try {
@@ -48,7 +53,21 @@ function getOrCreateTabletDeviceId() {
 }
 
 export default function TabletLockMode() {
+  const navigate = useNavigate();
   const { currencyCode, formatNumber } = useCurrency();
+  const { canPrompt, isInstalled, fallbackHint, promptInstall } = useInstallPrompt();
+  const [kioskEnabled, setKioskEnabled] = useState(() => {
+    try {
+      const fromUrl = new URLSearchParams(window.location.search).get('kiosk');
+      if (fromUrl === '1' || fromUrl === 'true') {
+        localStorage.setItem(TABLET_KIOSK_ENABLED_KEY, '1');
+        return true;
+      }
+      return localStorage.getItem(TABLET_KIOSK_ENABLED_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [deviceId] = useState(() => getOrCreateTabletDeviceId());
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -67,6 +86,9 @@ export default function TabletLockMode() {
     deliveredAt: string;
     seenAt?: string;
   } | null>(null);
+  const [paymentStatus, setPaymentStatus] = useState<{ message: string; at: string } | null>(null);
+  const [kioskTapCount, setKioskTapCount] = useState(0);
+  const [kioskExitOpen, setKioskExitOpen] = useState(false);
 
   const categories = useMemo(() => {
     const byId = new Map<string, string>();
@@ -336,6 +358,40 @@ export default function TabletLockMode() {
   }, [rows, lastSubmittedOrder?.orderId]);
 
   useEffect(() => {
+    if (!supabase) return;
+    const brandId = String(rows[0]?.brand_id ?? '').trim();
+    const tNo = Number(tableNo ?? 0);
+    if (!brandId || !Number.isFinite(tNo) || tNo <= 0) return;
+    const channel = supabase
+      .channel(`tablet-payment-status-${brandId}-${tNo}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'pos_notifications',
+          filter: `brand_id=eq.${brandId}`,
+        },
+        (payload) => {
+          const row = payload.new as any;
+          if (String(row?.type ?? '') !== 'tablet_payment_status') return;
+          const payloadTableNo = Number(row?.payload?.tableNo ?? 0);
+          if (!Number.isFinite(payloadTableNo) || payloadTableNo !== tNo) return;
+          const status = String(row?.payload?.status ?? '').toLowerCase();
+          if (status !== 'paid') return;
+          setPaymentStatus({
+            message: String(row?.payload?.message ?? 'Payment confirmed by cashier. Thank you!'),
+            at: new Date().toISOString(),
+          });
+        }
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [rows, tableNo]);
+
+  useEffect(() => {
     if (!lastSubmittedOrder) return;
     // Keep "Delivered" visible until cashier actually sees the order.
     // Once seen, keep the feedback longer, then reset for next customer.
@@ -347,9 +403,116 @@ export default function TabletLockMode() {
     return () => window.clearTimeout(timer);
   }, [lastSubmittedOrder?.status, lastSubmittedOrder?.orderId]);
 
+  useEffect(() => {
+    if (!paymentStatus) return;
+    const timer = window.setTimeout(() => setPaymentStatus(null), 60000);
+    return () => window.clearTimeout(timer);
+  }, [paymentStatus?.at]);
+
+  useEffect(() => {
+    if (!kioskEnabled) return;
+    const enterFullscreen = async () => {
+      try {
+        if (!document.fullscreenElement) {
+          await document.documentElement.requestFullscreen();
+        }
+      } catch {
+        // Some browsers require explicit user gesture; kiosk still stays guarded.
+      }
+    };
+    void enterFullscreen();
+
+    const blockContextMenu = (event: MouseEvent) => event.preventDefault();
+    const blockSelection = (event: Event) => event.preventDefault();
+    const blockShortcuts = (event: KeyboardEvent) => {
+      const key = String(event.key || '').toLowerCase();
+      const blocked = key === 'f11' || key === 'f12' || (event.ctrlKey && ['l', 't', 'n', 'w', 'r', 'u', 'p'].includes(key));
+      if (blocked) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    const handlePopState = () => {
+      window.history.pushState(null, '', window.location.href);
+    };
+    window.history.pushState(null, '', window.location.href);
+    document.addEventListener('contextmenu', blockContextMenu);
+    document.addEventListener('selectstart', blockSelection);
+    document.addEventListener('dragstart', blockSelection);
+    window.addEventListener('keydown', blockShortcuts, true);
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      document.removeEventListener('contextmenu', blockContextMenu);
+      document.removeEventListener('selectstart', blockSelection);
+      document.removeEventListener('dragstart', blockSelection);
+      window.removeEventListener('keydown', blockShortcuts, true);
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [kioskEnabled]);
+
+  useEffect(() => {
+    if (kioskTapCount <= 0) return;
+    const timer = window.setTimeout(() => setKioskTapCount(0), 1800);
+    return () => window.clearTimeout(timer);
+  }, [kioskTapCount]);
+
+  const handleHiddenExitTap = () => {
+    if (!kioskEnabled) return;
+    const next = kioskTapCount + 1;
+    setKioskTapCount(next);
+    if (next >= 5) {
+      setKioskTapCount(0);
+      setKioskExitOpen(true);
+    }
+  };
+
+  const confirmKioskExit = async () => {
+    localStorage.setItem(TABLET_KIOSK_ENABLED_KEY, '0');
+    setKioskEnabled(false);
+    setKioskExitOpen(false);
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+    } catch {
+      // ignore exit fullscreen errors
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-gradient-to-b from-background via-background to-muted/20 p-3 sm:p-4">
+    <div className={cn('min-h-screen bg-gradient-to-b from-background via-background to-muted/20 p-3 sm:p-4', kioskEnabled && 'select-none')}>
       <div className="mx-auto max-w-6xl space-y-4">
+        {kioskEnabled ? (
+          <div className="fixed top-0 inset-x-0 z-50 h-2" onClick={handleHiddenExitTap} />
+        ) : null}
+        {kioskEnabled ? (
+          <Card className="border-emerald-500/30 bg-emerald-500/5">
+            <CardContent className="py-2 flex items-center justify-between gap-2 text-xs">
+              <span className="inline-flex items-center gap-1.5 font-medium text-emerald-700">
+                <ShieldCheck className="h-3.5 w-3.5" /> Zombie Kiosk Mode Active
+              </span>
+              <span className="text-muted-foreground">Tap top edge 5x to unlock</span>
+            </CardContent>
+          </Card>
+        ) : null}
+        {!isInstalled ? (
+          <Card className="border-sky-500/30 bg-sky-500/5">
+            <CardContent className="py-2.5 space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <Badge variant="secondary">Install status: Not installed</Badge>
+                {canPrompt ? (
+                  <Button size="sm" variant="outline" onClick={() => void promptInstall()}>
+                    Install App
+                  </Button>
+                ) : null}
+              </div>
+              {!canPrompt ? <div className="text-xs text-muted-foreground">{fallbackHint}</div> : null}
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="flex items-center">
+            <Badge className="bg-emerald-600 text-white">Install status: Installed</Badge>
+          </div>
+        )}
         <Card className="border-sky-500/30 bg-sky-500/5">
           <CardContent className="py-3 flex flex-wrap items-center justify-between gap-3">
             <div className="text-sm">
@@ -407,6 +570,21 @@ export default function TabletLockMode() {
               </div>
               <div className="text-xs">
                 Device ID: <span className="font-mono">{deviceId}</span>
+              </div>
+              <div className="pt-1">
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    const session = localStorage.getItem(ENROLLMENT_SESSION_KEY) ?? '';
+                    if (session.trim()) {
+                      navigate(`/tablet-enroll?session=${encodeURIComponent(session.trim())}`);
+                    } else {
+                      navigate('/tablet-enroll');
+                    }
+                  }}
+                >
+                  Continue Tablet Setup
+                </Button>
               </div>
             </CardContent>
           </Card>
@@ -566,12 +744,34 @@ export default function TabletLockMode() {
                     </div>
                   </div>
                 ) : null}
+                {paymentStatus ? (
+                  <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-2 text-xs">
+                    <div className="font-semibold text-emerald-700">Payment Status</div>
+                    <div className="mt-0.5 text-emerald-700">{paymentStatus.message}</div>
+                  </div>
+                ) : null}
                 {submitMessage ? <div className="text-sm">{submitMessage}</div> : null}
               </CardContent>
             </Card>
           </div>
         )}
       </div>
+      <Dialog open={kioskExitOpen} onOpenChange={setKioskExitOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Exit Kiosk Mode</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="text-sm text-muted-foreground">
+              Confirm unlock. This will return the tablet to normal browser behavior.
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <Button variant="outline" onClick={() => setKioskExitOpen(false)}>Cancel</Button>
+              <Button onClick={() => void confirmKioskExit()}>Unlock Tablet</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

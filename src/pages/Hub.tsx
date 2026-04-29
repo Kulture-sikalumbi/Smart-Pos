@@ -10,7 +10,7 @@ import { Label } from '@/components/ui/label';
 import { useAuth } from '@/contexts/AuthContext';
 import { useWorkspace } from '@/contexts/WorkspaceContext';
 import { toast } from '@/hooks/use-toast';
-import { ROLE_ACCESS_HELPERS, ROLE_NAMES } from '@/types/auth';
+import { ROLE_NAMES } from '@/types/auth';
 
 export default function Hub() {
   const navigate = useNavigate();
@@ -98,11 +98,6 @@ export default function Hub() {
               <span className="text-white/80">Access Profile:</span>
               <span className="font-semibold text-cyan-200">{ROLE_NAMES[userRole]}</span>
             </div>
-            <div className="mt-2 space-y-1">
-              {ROLE_ACCESS_HELPERS[userRole].slice(0, 2).map((hint) => (
-                <p key={hint} className="text-xs text-white/70">- {hint}</p>
-              ))}
-            </div>
           </div>
           <Button variant="outline" className="border-white/30 bg-white/5 text-white hover:bg-white/10" onClick={() => setSwitchOpen(true)}>
             <RefreshCcw className="h-4 w-4 mr-2" />
@@ -113,11 +108,21 @@ export default function Hub() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <motion.div whileHover={{ scale: canUseBackOffice ? 1.02 : 1 }} whileTap={{ scale: canUseBackOffice ? 0.99 : 1 }}>
             <Card className={cardBase}>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-3">
-                  <Package className="h-6 w-6 text-cyan-300" />
-                  Back Office Operations
-                </CardTitle>
+              <CardHeader className="space-y-0">
+                <div className="flex items-start justify-between gap-2">
+                  <CardTitle className="flex items-center gap-3">
+                    <Package className="h-6 w-6 text-cyan-300" />
+                    Back Office Operations
+                  </CardTitle>
+                  <Button
+                    onClick={goBackOffice}
+                    disabled={!canUseBackOffice}
+                    size="sm"
+                    className="rounded-full px-4"
+                  >
+                    {canUseBackOffice ? 'Enter Back Office' : <span className="inline-flex items-center gap-2"><Lock className="h-4 w-4" />Restricted</span>}
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <p className="text-sm text-white/75">Inventory control, GRV, reports, compliance, staff administration.</p>
@@ -139,20 +144,27 @@ export default function Hub() {
                     </button>
                   ))}
                 </div>
-                <Button onClick={goBackOffice} disabled={!canUseBackOffice} className="w-full">
-                  {canUseBackOffice ? 'Enter Back Office' : <span className="inline-flex items-center gap-2"><Lock className="h-4 w-4" />Restricted</span>}
-                </Button>
               </CardContent>
             </Card>
           </motion.div>
 
           <motion.div whileHover={{ scale: canUseFrontOffice ? 1.02 : 1 }} whileTap={{ scale: canUseFrontOffice ? 0.99 : 1 }}>
             <Card className={cardBase}>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-3">
-                  <ChefHat className="h-6 w-6 text-emerald-300" />
-                  Front Office & Kitchen
-                </CardTitle>
+              <CardHeader className="space-y-0">
+                <div className="flex items-start justify-between gap-2">
+                  <CardTitle className="flex items-center gap-3">
+                    <ChefHat className="h-6 w-6 text-emerald-300" />
+                    Front Office & Kitchen
+                  </CardTitle>
+                  <Button
+                    onClick={goFrontOffice}
+                    disabled={!canUseFrontOffice}
+                    size="sm"
+                    className="rounded-full px-4"
+                  >
+                    {canUseFrontOffice ? 'Enter Front Office' : <span className="inline-flex items-center gap-2"><Lock className="h-4 w-4" />Restricted</span>}
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <p className="text-sm text-white/75">POS terminal, kitchen flow, table service, front stock operations.</p>
@@ -174,9 +186,6 @@ export default function Hub() {
                     </button>
                   ))}
                 </div>
-                <Button onClick={goFrontOffice} disabled={!canUseFrontOffice} className="w-full">
-                  {canUseFrontOffice ? 'Enter Front Office' : <span className="inline-flex items-center gap-2"><Lock className="h-4 w-4" />Restricted</span>}
-                </Button>
               </CardContent>
             </Card>
           </motion.div>

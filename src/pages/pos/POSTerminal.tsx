@@ -38,6 +38,7 @@ import { ROLE_NAMES } from '@/types/auth';
 import { supabase } from '@/lib/supabaseClient';
 import { useCurrency } from '@/contexts/CurrencyContext';
 import { getFrontStockSnapshot, subscribeFrontStock } from '@/lib/frontStockStore';
+import { getActiveBrandId } from '@/lib/activeBrand';
 
 type SessionReceiptRow = {
   id: string;
@@ -91,6 +92,8 @@ export default function POSTerminal() {
   const prevReadyRef = useRef<Set<string>>(new Set());
   const seenIncomingOrderIdsRef = useRef<Set<string>>(new Set());
   const seenIncomingCallNotifIdsRef = useRef<Set<string>>(new Set());
+  const incomingOrdersInitializedRef = useRef(false);
+  const incomingNotifsInitializedRef = useRef(false);
   const [incomingOrders, setIncomingOrders] = useState<Array<{ id: string; orderNo: number; tableNo?: number; tableLabel?: string; total: number; source?: string; createdAt: string }>>([]);
   const [incomingCalls, setIncomingCalls] = useState<Array<{ id: string; kind: 'waiter_call' | 'payment_request'; tableNo?: number; tableLabel?: string; createdAt: string }>>([]);
   const [showIncomingOrders, setShowIncomingOrders] = useState(false);
@@ -125,6 +128,14 @@ export default function POSTerminal() {
     try {
       const next: Array<{ id: string; orderNo: number; tableNo?: number; tableLabel?: string; total: number; source?: string; createdAt: string }> = [];
       const nowMs = Date.now();
+      if (!incomingOrdersInitializedRef.current) {
+        for (const o of orders) {
+          const source = (o as any).source ?? 'pos';
+          if (source === 'tablet') seenIncomingOrderIdsRef.current.add(o.id);
+        }
+        incomingOrdersInitializedRef.current = true;
+        return;
+      }
       for (const o of orders) {
         const source = (o as any).source ?? 'pos';
         if (source !== 'tablet') continue;
@@ -281,10 +292,15 @@ export default function POSTerminal() {
   const [tillSetupBusy, setTillSetupBusy] = useState(false);
   const [tillSetupError, setTillSetupError] = useState<string | null>(null);
   const [supervisorEmail, setSupervisorEmail] = useState('');
-  const [availableTills, setAvailableTills] = useState<Array<{ id: string; code: string; name: string }>>([]);
+  const [availableTills, setAvailableTills] = useState<Array<{
+    id: string;
+    code: string;
+    name: string;
+    assignedDeviceId?: string | null;
+  }>>([]);
   const [selectedTillId, setSelectedTillId] = useState<string>('');
-  const tillAutoLoadTimerRef = useRef<number | null>(null);
-  const lastTillAutoLoadKeyRef = useRef<string>('');
+  const [loadedSupervisorEmail, setLoadedSupervisorEmail] = useState('');
+  const [showReplaceTillConfirm, setShowReplaceTillConfirm] = useState(false);
   const allowTillSetupCloseRef = useRef(false);
 
   const [isOnline, setIsOnline] = useState(() => (typeof navigator !== 'undefined' ? navigator.onLine : true));
@@ -422,6 +438,7 @@ export default function POSTerminal() {
     if (!supabase) return;
     const email = supervisorEmail.trim().toLowerCase();
     const brandId = String(user?.brand_id ?? '').trim();
+    const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
     if (!brandId) {
       setTillSetupError('Missing brand context. Please sign in again.');
       return;
@@ -429,12 +446,20 @@ export default function POSTerminal() {
     if (!email) {
       setTillSetupError('Enter admin email.');
       setAvailableTills([]);
+      setLoadedSupervisorEmail('');
+      return;
+    }
+    if (!validEmail) {
+      setTillSetupError('Enter a valid admin email (example: owner@brand.com).');
+      setAvailableTills([]);
+      setLoadedSupervisorEmail('');
       return;
     }
     setTillSetupBusy(true);
     setTillSetupError(null);
+    setSelectedTillId('');
     try {
-      const { data, error } = await supabase.rpc('list_tills_for_brand_admin_email', {
+      const { data, error } = await supabase.rpc('list_tills_with_assignment_for_brand_admin_email', {
         p_brand_id: brandId,
         p_admin_email: email,
       });
@@ -448,52 +473,43 @@ export default function POSTerminal() {
         id: String(t.id),
         code: String(t.code ?? ''),
         name: String(t.name ?? ''),
+        assignedDeviceId: t.assigned_device_id ? String(t.assigned_device_id) : null,
       }));
       setAvailableTills(tills);
+      setLoadedSupervisorEmail(email);
       if (!tills.length) {
         setTillSetupError('Admin email not allowed for this brand or no active tills found.');
       }
-      if (!selectedTillId && tills.length) setSelectedTillId(tills[0].id);
+      if (tills.length) setSelectedTillId(tills[0].id);
     } catch (e: any) {
       setTillSetupError(e?.message ?? 'Unable to load tills');
       setAvailableTills([]);
+      setLoadedSupervisorEmail('');
     } finally {
       setTillSetupBusy(false);
     }
   };
 
   useEffect(() => {
-    if (!showTillSetup) return;
     const email = supervisorEmail.trim().toLowerCase();
-    const brandId = String(user?.brand_id ?? '').trim();
-    if (!brandId || !email) return;
-
-    const autoLoadKey = `${brandId}|${email}`;
-    if (lastTillAutoLoadKeyRef.current === autoLoadKey) return;
-
-    if (tillAutoLoadTimerRef.current != null) {
-      window.clearTimeout(tillAutoLoadTimerRef.current);
+    if (!email) {
+      setAvailableTills([]);
+      setSelectedTillId('');
+      setLoadedSupervisorEmail('');
+      setTillSetupError(null);
+      return;
     }
-    tillAutoLoadTimerRef.current = window.setTimeout(() => {
-      if (lastTillAutoLoadKeyRef.current === autoLoadKey) return;
-      lastTillAutoLoadKeyRef.current = autoLoadKey;
-      void loadTillsForSupervisor();
-    }, 350);
+    if (loadedSupervisorEmail && email !== loadedSupervisorEmail) {
+      setAvailableTills([]);
+      setSelectedTillId('');
+    }
+  }, [supervisorEmail, loadedSupervisorEmail]);
 
-    return () => {
-      if (tillAutoLoadTimerRef.current != null) {
-        window.clearTimeout(tillAutoLoadTimerRef.current);
-        tillAutoLoadTimerRef.current = null;
-      }
-    };
-    // Intentionally omit loadTillsForSupervisor to avoid recreating the debounce on each render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showTillSetup, supervisorEmail, user?.brand_id]);
-
-  const assignTillToThisDevice = async () => {
+  const assignTillToThisDevice = async (forceReplace = false) => {
     if (!supabase) return;
     const email = supervisorEmail.trim().toLowerCase();
     const brandId = String(user?.brand_id ?? '').trim();
+    const validEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
     if (!brandId) {
       setTillSetupError('Missing brand context. Please sign in again.');
       return;
@@ -502,18 +518,37 @@ export default function POSTerminal() {
       setTillSetupError('Enter admin email.');
       return;
     }
+    if (!validEmail) {
+      setTillSetupError('Enter a valid admin email.');
+      return;
+    }
     if (!selectedTillId) {
       setTillSetupError('Select a till.');
+      return;
+    }
+    if (!loadedSupervisorEmail || loadedSupervisorEmail !== email || !availableTills.length) {
+      setTillSetupError('Load tills using this admin email first, then assign.');
+      return;
+    }
+    const selectedTill = availableTills.find((t) => t.id === selectedTillId);
+    const assignedDevice = String(selectedTill?.assignedDeviceId ?? '').trim();
+    if (
+      assignedDevice &&
+      assignedDevice.toLowerCase() !== String(deviceId).toLowerCase() &&
+      !forceReplace
+    ) {
+      setShowReplaceTillConfirm(true);
       return;
     }
     setTillSetupBusy(true);
     setTillSetupError(null);
     try {
-      const { data, error } = await supabase.rpc('assign_pos_device_to_till_by_brand_admin_email', {
+      const { data, error } = await supabase.rpc('assign_pos_device_to_till_by_brand_admin_email_v2', {
         p_brand_id: brandId,
         p_admin_email: email,
         p_device_id: deviceId,
         p_till_id: selectedTillId,
+        p_replace_existing: forceReplace,
       });
 
       if (error) {
@@ -537,6 +572,7 @@ export default function POSTerminal() {
       }
       allowTillSetupCloseRef.current = true;
       setShowTillSetup(false);
+      setShowReplaceTillConfirm(false);
       setShowStartShift(true);
       toast({ title: 'Till assigned', description: 'This terminal is now linked to a till.' });
     } catch (e: any) {
@@ -836,6 +872,16 @@ export default function POSTerminal() {
 
   useEffect(() => {
     const ids = posNotifs.map((n) => n.id).join('|');
+    if (!incomingNotifsInitializedRef.current) {
+      prevNotifIds.current = ids;
+      for (const n of posNotifs) {
+        if (n.type === 'waiter_call' || n.type === 'tablet_payment_request') {
+          seenIncomingCallNotifIdsRef.current.add(n.id);
+        }
+      }
+      incomingNotifsInitializedRef.current = true;
+      return;
+    }
     if (ids !== prevNotifIds.current) {
       const prevSet = new Set(prevNotifIds.current.split('|').filter(Boolean));
       for (const n of posNotifs) {
@@ -1586,14 +1632,16 @@ export default function POSTerminal() {
       );
       setActiveOrderId(saved.id);
       const isTableOrder = orderType === 'eat_in' && Number(selectedTable) > 0;
-      if (shouldPark && isTableOrder) {
+      if (isTableOrder) {
         addPosPaymentRequest({
           tableNo: Number(selectedTable),
           orderId: saved.id,
           total: Number(saved.total ?? orderTotals.total ?? 0),
           requestedBy: user?.name ?? user?.email ?? 'cashier',
-          note: 'Unpaid (awaiting bill)',
+          note: shouldPark ? 'Unpaid (awaiting bill)' : 'Unpaid (auto-tracked)',
         });
+      }
+      if (shouldPark && isTableOrder) {
         clearOrder();
         setShowPaymentRequests(true);
         toast({
@@ -1635,6 +1683,26 @@ export default function POSTerminal() {
         const req = paymentRequests.find((r) => r.orderId === saved.id);
         if (req) resolvePosPaymentRequest(req.id);
       }, 0);
+
+      // Let table tablets know payment has been confirmed by cashier.
+      try {
+        const tableNo = Number(saved.tableNo ?? 0);
+        const brandId = String(getActiveBrandId() ?? '').trim();
+        if (supabase && brandId && Number.isFinite(tableNo) && tableNo > 0) {
+          void supabase.from('pos_notifications').insert({
+            brand_id: brandId,
+            type: 'tablet_payment_status',
+            payload: {
+              orderId: saved.id,
+              tableNo,
+              status: 'paid',
+              message: 'Payment confirmed by cashier',
+            },
+          });
+        }
+      } catch {
+        // non-blocking
+      }
     } catch (e) {
       setShowPayment(false);
       showDeductionError(e);
@@ -1686,7 +1754,7 @@ export default function POSTerminal() {
         : 'Take Out';
     const issuedAt = new Date().toLocaleString();
     const itemRows = orderItems
-      .map((it) => `<tr><td style="padding:4px 0;">${it.quantity}x</td><td style="padding:4px 0 4px 8px;">${String(it.menuItemName ?? '')}</td></tr>`)
+      .map((it) => `<tr><td style="padding:2px 0; width:28px; vertical-align:top; font-weight:700;">${it.quantity}x</td><td style="padding:2px 0 2px 6px;">${String(it.menuItemName ?? '')}</td></tr>`)
       .join('');
     const html = `<!doctype html>
 <html>
@@ -1694,23 +1762,28 @@ export default function POSTerminal() {
     <meta charset="utf-8" />
     <title>Preparation Ticket</title>
     <style>
-      body { font-family: Arial, sans-serif; padding: 12px; color: #111; }
-      .brand { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
-      .meta { font-size: 13px; margin: 2px 0; }
-      .divider { border-top: 1px dashed #555; margin: 10px 0; }
+      @page { size: 58mm auto; margin: 3mm; }
+      body { font-family: Arial, sans-serif; margin: 0; padding: 0; color: #111; width: 58mm; }
+      .wrap { padding: 0; }
+      .brand { font-size: 12px; font-weight: 700; text-align: center; margin-bottom: 2px; }
+      .order-no { font-size: 22px; font-weight: 900; text-align: center; line-height: 1.1; margin: 2px 0 4px; }
+      .meta { font-size: 10px; margin: 1px 0; }
+      .divider { border-top: 1px dashed #555; margin: 6px 0; }
       table { width: 100%; border-collapse: collapse; }
-      .footer { margin-top: 10px; font-size: 12px; color: #444; }
+      .footer { margin-top: 6px; font-size: 11px; text-align: center; font-weight: 700; }
     </style>
   </head>
   <body>
-    <div class="brand">${String(settings.appName ?? 'POS')}</div>
-    <div class="meta"><strong>Order #</strong> ${String(orderNo)}</div>
-    <div class="meta"><strong>Type</strong> ${String(tableLabel)}</div>
-    <div class="meta"><strong>Issued</strong> ${String(issuedAt)}</div>
-    <div class="divider"></div>
-    <table>${itemRows}</table>
-    <div class="divider"></div>
-    <div class="footer">Preparation Ticket</div>
+    <div class="wrap">
+      <div class="brand">${String(settings.appName ?? 'POS')}</div>
+      <div class="order-no">#${String(orderNo)}</div>
+      <div class="meta"><strong>${String(tableLabel)}</strong></div>
+      <div class="meta">${String(issuedAt)}</div>
+      <div class="divider"></div>
+      <table>${itemRows}</table>
+      <div class="divider"></div>
+      <div class="footer">Your order is being prepared, please wait.</div>
+    </div>
   </body>
 </html>`;
     const w = window.open('', '_blank', 'width=420,height=640');
@@ -1859,12 +1932,9 @@ export default function POSTerminal() {
             setAvailableTills([]);
             setSelectedTillId('');
             setSupervisorEmail('');
-            lastTillAutoLoadKeyRef.current = '';
+            setLoadedSupervisorEmail('');
+            setShowReplaceTillConfirm(false);
             allowTillSetupCloseRef.current = false;
-            if (tillAutoLoadTimerRef.current != null) {
-              window.clearTimeout(tillAutoLoadTimerRef.current);
-              tillAutoLoadTimerRef.current = null;
-            }
           }
         }}
       >
@@ -1891,14 +1961,21 @@ export default function POSTerminal() {
                 <div className="text-xs text-muted-foreground">Admin email</div>
                 <Input
                   value={supervisorEmail}
-                  onChange={(e) => setSupervisorEmail(e.target.value)}
+                  onChange={(e) => {
+                    setSupervisorEmail(e.target.value);
+                    setTillSetupError(null);
+                  }}
                   placeholder="e.g. owner@brand.com"
                   autoComplete="username"
                 />
               </div>
               <div className="text-xs text-muted-foreground">Enter admin email to load available tills for this brand.</div>
               <div className="flex gap-2">
-                <Button variant="outline" onClick={loadTillsForSupervisor} disabled={tillSetupBusy}>
+                <Button
+                  variant="outline"
+                  onClick={loadTillsForSupervisor}
+                  disabled={tillSetupBusy || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(supervisorEmail.trim().toLowerCase())}
+                >
                   Load tills
                 </Button>
               </div>
@@ -1915,10 +1992,16 @@ export default function POSTerminal() {
                     {availableTills.map((t) => (
                       <SelectItem key={t.id} value={t.id}>
                         {t.code} • {t.name}
+                        {t.assignedDeviceId
+                          ? ` • Assigned (${t.assignedDeviceId === deviceId ? 'this device' : t.assignedDeviceId})`
+                          : ' • Unassigned'}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                <div className="text-[11px] text-muted-foreground">
+                  Assigned tills are shown inline. Selecting one assigned to another device will ask for replacement confirmation.
+                </div>
               </div>
             ) : null}
 
@@ -1927,6 +2010,27 @@ export default function POSTerminal() {
             <div className="flex justify-end gap-2 pt-2">
               <Button onClick={assignTillToThisDevice} disabled={tillSetupBusy || !selectedTillId}>
                 Assign till
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showReplaceTillConfirm} onOpenChange={setShowReplaceTillConfirm}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Replace till assignment?</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <div className="text-muted-foreground">
+              This till is already linked to another device. Do you want to replace it with this terminal?
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowReplaceTillConfirm(false)} disabled={tillSetupBusy}>
+                Cancel
+              </Button>
+              <Button onClick={() => void assignTillToThisDevice(true)} disabled={tillSetupBusy}>
+                {tillSetupBusy ? 'Replacing...' : 'Replace & Assign'}
               </Button>
             </div>
           </div>
@@ -2059,17 +2163,31 @@ export default function POSTerminal() {
                 <Button
                   variant={incomingOrders.length + incomingCalls.length > 0 ? 'default' : 'outline'}
                   className={cn('relative px-2.5 sm:px-3', incomingOrders.length + incomingCalls.length > 0 ? 'animate-[pulse_1.15s_ease-in-out_infinite]' : '')}
-                  title="Incoming tablet orders"
+                  title="Table inbox"
                   onClick={() => setShowIncomingOrders(true)}
                 >
                   <Receipt className="h-4 w-4" />
-                  <span className="hidden lg:inline ml-2">Incoming</span>
+                  <span className="hidden lg:inline ml-2">Table Inbox</span>
                   {incomingOrders.length + incomingCalls.length > 0 ? (
                     <span className="absolute -top-1 -right-1 inline-flex h-3 w-3 rounded-full bg-sky-500 animate-ping" />
                   ) : null}
                   {incomingOrders.length + incomingCalls.length > 0 ? (
                     <span className="ml-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-sky-600 px-1 text-xs font-bold text-white animate-pulse">
                       {incomingOrders.length + incomingCalls.length}
+                    </span>
+                  ) : null}
+                </Button>
+                <Button
+                  variant={paymentRequests.length > 0 ? 'default' : 'outline'}
+                  className="relative px-2.5 sm:px-3"
+                  title="Table payments"
+                  onClick={() => setShowPaymentRequests(true)}
+                >
+                  <CreditCard className="h-4 w-4" />
+                  <span className="hidden lg:inline ml-2">Table Payments</span>
+                  {paymentRequests.length > 0 ? (
+                    <span className="ml-2 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-destructive px-1 text-xs font-bold text-destructive-foreground">
+                      {paymentRequests.length}
                     </span>
                   ) : null}
                 </Button>
@@ -2116,7 +2234,7 @@ export default function POSTerminal() {
                   <DialogContent className="max-w-md">
                     <div className="space-y-2">
                       <div className="flex items-center justify-between gap-2">
-                        <div className="font-medium">Incoming Orders</div>
+                        <div className="font-medium">Table Inbox</div>
                         {incomingOrders.length || incomingCalls.length ? (
                           <Button
                             variant="outline"
@@ -2189,11 +2307,6 @@ export default function POSTerminal() {
                     </div>
                   </DialogContent>
                 </Dialog>
-
-                <Button variant="outline" className="relative px-2.5 sm:px-3" onClick={() => setShowHeldOrders(true)} title="Resume held orders">
-                  <FolderOpen className="h-4 w-4" />
-                  <span className="hidden lg:inline ml-2">Held</span>
-                </Button>
 
                 <Dialog open={showTableSelect} onOpenChange={setShowTableSelect}>
                   <DialogContent className="max-w-md">
@@ -2596,6 +2709,17 @@ export default function POSTerminal() {
                 variant="outline"
                 size="sm"
                 className="shrink-0"
+                onClick={() => setShowHeldOrders(true)}
+                title="Resume held orders"
+              >
+                <FolderOpen className="h-4 w-4 mr-2" />
+                <span className="hidden sm:inline">Held</span>
+                <span className="inline sm:hidden">Held</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0"
                 onClick={() => setOrderType(orderType === 'eat_in' ? 'take_out' : 'eat_in')}
                 title="Toggle Eat-in / Take-out"
               >
@@ -2799,25 +2923,22 @@ export default function POSTerminal() {
               )}
               {sendKitchenBusy ? 'Sending...' : 'Send to Kitchen'}
             </Button>
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" title="More actions">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent align="end" className="w-72 p-2">
-                <div className="space-y-2">
-                  <Button
-                    variant="outline"
-                    className="w-full justify-start"
-                    disabled={sendKitchenBusy || orderItems.length === 0 || orderItems.every((i) => i.sentToKitchen) || orderType !== 'eat_in' || !selectedTable}
-                    onClick={() => openKitchenSendReview(true)}
-                  >
-                    Send & Park for Later Payment
+            <div
+              className={cn(
+                'transition-all duration-200',
+                orderItems.length > 0 || !!receiptOrder || !!activeOrderId
+                  ? 'opacity-100 translate-y-0'
+                  : 'opacity-60 translate-y-0'
+              )}
+            >
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="icon" title="More actions">
+                    <MoreHorizontal className="h-4 w-4" />
                   </Button>
-
-                  <div className="h-px bg-border my-2" />
-
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-72 p-2">
+                  <div className="space-y-2">
                   <Button
                     variant="outline"
                     className="w-full justify-start"
@@ -2837,72 +2958,26 @@ export default function POSTerminal() {
 
                   <div className="h-px bg-border my-2" />
 
-                  <Button
-                    variant="outline"
-                    className="w-full justify-start"
-                    disabled={orderItems.length === 0 && !activeOrderId}
-                    onClick={presentBillForTracking}
-                  >
-                    Present Bill
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="w-full justify-start"
-                    onClick={() => setShowPaymentRequests(true)}
-                  >
-                    Payment Tracking
-                  </Button>
-
-                  <div className="h-px bg-border my-2" />
-
-                  <Button
-                    variant="outline"
-                    className="w-full justify-start"
-                    disabled={orderItems.length === 0}
-                    onClick={printPreparationTicket}
-                  >
-                    Print Preparation Ticket
-                  </Button>
-
-                  <div className="h-px bg-border my-2" />
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start"
-                      disabled={orderItems.length === 0}
-                      onClick={() => setSelectedOrderItemId((prev) => prev ?? orderItems[orderItems.length - 1]?.id ?? null)}
-                    >
-                      Add
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start"
-                      disabled={orderItems.length === 0}
-                      onClick={() => setSelectedOrderItemId((prev) => prev ?? orderItems[orderItems.length - 1]?.id ?? null)}
-                    >
-                      Discount
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start"
-                      disabled={orderItems.length === 0}
-                      onClick={() => setShowCoupon(true)}
-                    >
-                      Coupon
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start"
-                      disabled={orderItems.length === 0}
-                      onClick={() => setSelectedOrderItemId((prev) => prev ?? orderItems[orderItems.length - 1]?.id ?? null)}
-                    >
-                      Note
-                    </Button>
                   </div>
-                </div>
-              </PopoverContent>
-            </Popover>
+                </PopoverContent>
+              </Popover>
+            </div>
+          </div>
+
+          <div
+            className={cn(
+              'mb-2 transition-all duration-200',
+              orderItems.length > 0 ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1 h-0 overflow-hidden'
+            )}
+          >
+            <Button
+              variant="outline"
+              className="w-full"
+              disabled={orderItems.length === 0}
+              onClick={printPreparationTicket}
+            >
+              Print Preparation Ticket
+            </Button>
           </div>
 
           <div className="grid grid-cols-2 gap-2">
@@ -2994,15 +3069,15 @@ export default function POSTerminal() {
         </DialogContent>
       </Dialog>
 
-      {/* Payment Requests (from Tables -> Till) */}
+      {/* Table Payments (from table orders -> till) */}
       <Dialog open={showPaymentRequests} onOpenChange={setShowPaymentRequests}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Payment Requests</DialogTitle>
+            <DialogTitle>Table Payments</DialogTitle>
           </DialogHeader>
           <div className="space-y-2">
             {paymentRequests.length === 0 ? (
-              <div className="text-sm text-muted-foreground">No payment requests right now.</div>
+              <div className="text-sm text-muted-foreground">No unpaid table payments right now.</div>
             ) : (
               paymentRequests.map((r) => (
                 <Card key={r.id} className="p-3">
@@ -3012,9 +3087,10 @@ export default function POSTerminal() {
                       <div className="text-xs text-muted-foreground">
                         Requested by {r.requestedBy ?? 'staff'} • {new Date(r.createdAt).toLocaleTimeString()}
                       </div>
-                      <div className="mt-1">
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <Badge variant="destructive">Unpaid</Badge>
                         <Badge variant={String(r.note ?? '').toLowerCase().includes('presented') ? 'default' : 'secondary'}>
-                          {String(r.note ?? '').trim() || 'Payment tracking'}
+                          {String(r.note ?? '').trim() || 'Tracked'}
                         </Badge>
                       </div>
                       <div className="text-sm mt-1">
@@ -3030,7 +3106,7 @@ export default function POSTerminal() {
                           setShowPaymentRequests(false);
                         }}
                       >
-                        Open & Pay
+                        Open & Settle
                       </Button>
                       <Button size="sm" variant="outline" onClick={() => resolvePosPaymentRequest(r.id)}>
                         Dismiss
