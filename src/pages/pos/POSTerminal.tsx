@@ -97,11 +97,54 @@ export default function POSTerminal() {
   const [incomingOrders, setIncomingOrders] = useState<Array<{ id: string; orderNo: number; tableNo?: number; tableLabel?: string; total: number; source?: string; createdAt: string }>>([]);
   const [incomingCalls, setIncomingCalls] = useState<Array<{ id: string; kind: 'waiter_call' | 'payment_request'; tableNo?: number; tableLabel?: string; createdAt: string }>>([]);
   const [showIncomingOrders, setShowIncomingOrders] = useState(false);
+  const syncedPaymentNotifIdsRef = useRef<Set<string>>(new Set());
   const posNotifs = useSyncExternalStore(subscribePosNotifications, getPosNotificationsSnapshot);
   const requestNotifs = useMemo(
     () => posNotifs.filter((n) => String(n.type ?? '') !== 'waiter_call' && String(n.type ?? '') !== 'tablet_order_seen'),
     [posNotifs]
   );
+  const seenTabletOrderIdsFromNotifs = useMemo(() => {
+    const ids = new Set<string>();
+    for (const n of posNotifs) {
+      if (String(n.type ?? '') !== 'tablet_order_seen') continue;
+      const orderId = String(n.payload?.orderId ?? '').trim();
+      if (orderId) ids.add(orderId);
+    }
+    return ids;
+  }, [posNotifs]);
+  const incomingSeenStorageKey = useMemo(() => {
+    const brandId = String(getActiveBrandId() ?? 'no-brand').trim() || 'no-brand';
+    const userId = String(user?.id ?? 'no-user').trim() || 'no-user';
+    return `pmx.pos.incoming.seen.v1:${brandId}:${userId}`;
+  }, [user?.id]);
+
+  const persistSeenIncomingOrderIds = () => {
+    try {
+      localStorage.setItem(
+        incomingSeenStorageKey,
+        JSON.stringify(Array.from(seenIncomingOrderIdsRef.current).slice(-1000))
+      );
+    } catch {
+      // ignore storage issues
+    }
+  };
+
+  useEffect(() => {
+    seenIncomingOrderIdsRef.current = new Set();
+    incomingOrdersInitializedRef.current = false;
+    try {
+      const raw = localStorage.getItem(incomingSeenStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      for (const id of parsed) {
+        const v = String(id ?? '').trim();
+        if (v) seenIncomingOrderIdsRef.current.add(v);
+      }
+    } catch {
+      // ignore malformed cache
+    }
+  }, [incomingSeenStorageKey]);
 
   useEffect(() => {
     const readyIds = new Set(orders.filter((o) => o.status === 'ready').map((o) => o.id));
@@ -129,20 +172,26 @@ export default function POSTerminal() {
       const next: Array<{ id: string; orderNo: number; tableNo?: number; tableLabel?: string; total: number; source?: string; createdAt: string }> = [];
       const nowMs = Date.now();
       if (!incomingOrdersInitializedRef.current) {
+        if (!orders.length) return;
         for (const o of orders) {
           const source = (o as any).source ?? 'pos';
           if (source === 'tablet') seenIncomingOrderIdsRef.current.add(o.id);
         }
+        persistSeenIncomingOrderIds();
         incomingOrdersInitializedRef.current = true;
         return;
       }
       for (const o of orders) {
         const source = (o as any).source ?? 'pos';
         if (source !== 'tablet') continue;
+        if (seenTabletOrderIdsFromNotifs.has(String(o.id))) {
+          seenIncomingOrderIdsRef.current.add(o.id);
+          continue;
+        }
         if (seenIncomingOrderIdsRef.current.has(o.id)) continue;
         const createdMs = new Date(o.createdAt).getTime();
         // Only treat relatively recent arrivals as "incoming" to avoid backfilling noise.
-        if (Number.isFinite(createdMs) && nowMs - createdMs > 1000 * 60 * 30) {
+        if (!Number.isFinite(createdMs) || nowMs - createdMs > 1000 * 60 * 30) {
           seenIncomingOrderIdsRef.current.add(o.id);
           continue;
         }
@@ -157,6 +206,7 @@ export default function POSTerminal() {
           createdAt: o.createdAt,
         });
       }
+      persistSeenIncomingOrderIds();
       if (next.length > 0) {
         // Chime once per batch.
         try {
@@ -168,7 +218,20 @@ export default function POSTerminal() {
       // ignore
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orders]);
+  }, [orders, seenTabletOrderIdsFromNotifs]);
+
+  useEffect(() => {
+    if (!seenTabletOrderIdsFromNotifs.size) return;
+    setIncomingOrders((prev) => prev.filter((o) => !seenTabletOrderIdsFromNotifs.has(String(o.id))));
+    let changed = false;
+    for (const id of seenTabletOrderIdsFromNotifs) {
+      if (!seenIncomingOrderIdsRef.current.has(id)) {
+        seenIncomingOrderIdsRef.current.add(id);
+        changed = true;
+      }
+    }
+    if (changed) persistSeenIncomingOrderIds();
+  }, [seenTabletOrderIdsFromNotifs]);
 
   // Online/offline status toast and internal state.
   useEffect(() => {
@@ -584,6 +647,10 @@ export default function POSTerminal() {
 
   const openIncomingOrder = (incoming: { id: string; orderNo: number; tableNo?: number; createdAt: string }) => {
     const incomingId = String(incoming.id ?? '').trim();
+    if (incomingId) {
+      seenIncomingOrderIdsRef.current.add(incomingId);
+      persistSeenIncomingOrderIds();
+    }
     const full = findOrderById(incomingId);
     if (full) loadOrderToTerminal(full);
     if (supabase) {
@@ -791,6 +858,39 @@ export default function POSTerminal() {
   const slideTimerRef = useRef<number | null>(null);
   const [slidePayload, setSlidePayload] = useState<{ title: string; body: string; openTarget: 'notifications' | 'incoming' } | null>(null);
   const [lastTabletChannelActivityAt, setLastTabletChannelActivityAt] = useState<number>(Date.now());
+  const isFreshRealtimeEvent = (isoAt?: string, maxAgeMinutes = 3) => {
+    const ts = String(isoAt ?? '').trim();
+    const ms = new Date(ts).getTime();
+    if (!Number.isFinite(ms)) return false;
+    return Date.now() - ms <= maxAgeMinutes * 60 * 1000;
+  };
+
+  const broadcastPaymentTrackingRequest = (params: {
+    orderId: string;
+    tableNo: number;
+    total: number;
+    note?: string;
+  }) => {
+    try {
+      const brandId = String(getActiveBrandId() ?? '').trim();
+      if (!supabase || !brandId) return;
+      void supabase.from('pos_notifications').insert({
+        brand_id: brandId,
+        type: 'tablet_payment_request',
+        payload: {
+          orderId: params.orderId,
+          tableNo: params.tableNo,
+          tableLabel: `Table ${params.tableNo}`,
+          total: Number(params.total ?? 0),
+          requestedBy: user?.name ?? user?.email ?? 'cashier',
+          note: params.note ?? 'Payment tracking request',
+          source: 'pos_tracking',
+        },
+      });
+    } catch {
+      // non-blocking
+    }
+  };
 
   const computeLineTotal = (unitPrice: number, qty: number, discountPercent?: number) => {
     const d = Math.min(100, Math.max(0, discountPercent ?? 0));
@@ -886,19 +986,24 @@ export default function POSTerminal() {
       const prevSet = new Set(prevNotifIds.current.split('|').filter(Boolean));
       for (const n of posNotifs) {
         if (!prevSet.has(n.id)) {
+          const createdAt = String((n as any)?.created_at ?? '');
+          const fresh = isFreshRealtimeEvent(createdAt, 3);
           if ((n.type === 'waiter_call' || n.type === 'tablet_payment_request') && !seenIncomingCallNotifIdsRef.current.has(n.id)) {
             seenIncomingCallNotifIdsRef.current.add(n.id);
-            setIncomingCalls((prev) => [
-              {
-                id: String(n.id),
-                kind: n.type === 'tablet_payment_request' ? 'payment_request' : 'waiter_call',
-                tableNo: n.payload?.tableNo != null ? Number(n.payload.tableNo) : undefined,
-                tableLabel: n.payload?.tableLabel != null ? String(n.payload.tableLabel) : undefined,
-                createdAt: String(n.created_at ?? new Date().toISOString()),
-              },
-              ...prev,
-            ].slice(0, 50));
+            if (fresh) {
+              setIncomingCalls((prev) => [
+                {
+                  id: String(n.id),
+                  kind: n.type === 'tablet_payment_request' ? 'payment_request' : 'waiter_call',
+                  tableNo: n.payload?.tableNo != null ? Number(n.payload.tableNo) : undefined,
+                  tableLabel: n.payload?.tableLabel != null ? String(n.payload.tableLabel) : undefined,
+                  createdAt: String(n.created_at ?? new Date().toISOString()),
+                },
+                ...prev,
+              ].slice(0, 50));
+            }
           }
+          if (!fresh) continue;
           try {
             if (n.type === 'waiter_call') {
               toast({
@@ -941,11 +1046,33 @@ export default function POSTerminal() {
   }, [posNotifs, toast]);
 
   useEffect(() => {
+    for (const n of posNotifs) {
+      if (String(n.type ?? '') !== 'tablet_payment_request') continue;
+      if (syncedPaymentNotifIdsRef.current.has(n.id)) continue;
+      const payload = (n.payload ?? {}) as any;
+      const tableNo = Number(payload.tableNo ?? 0);
+      if (!Number.isFinite(tableNo) || tableNo <= 0) continue;
+      syncedPaymentNotifIdsRef.current.add(n.id);
+      const orderIdRaw = String(payload.orderId ?? '').trim();
+      addPosPaymentRequest({
+        id: n.id,
+        createdAt: String(n.created_at ?? new Date().toISOString()),
+        tableNo,
+        orderId: orderIdRaw || `notif-${n.id}`,
+        total: Number(payload.total ?? 0) || 0,
+        requestedBy: String(payload.requestedBy ?? payload.deviceId ?? 'staff'),
+        note: String(payload.note ?? 'Tracked'),
+      });
+    }
+  }, [posNotifs]);
+
+  useEffect(() => {
     const ids = incomingOrders.map((o) => o.id).join('|');
     if (ids !== prevIncomingIds.current) {
       const prevSet = new Set(prevIncomingIds.current.split('|').filter(Boolean));
       for (const o of incomingOrders) {
         if (!prevSet.has(o.id)) {
+          if (!isFreshRealtimeEvent(String(o.createdAt ?? ''), 3)) continue;
           try {
             setSlidePayload({
               title: 'Incoming Tablet Order',
@@ -1404,7 +1531,9 @@ export default function POSTerminal() {
     // Use merged items if provided, otherwise use orderItems
     const itemsToSave = (params.items ?? orderItems).map((item) => ({
       ...item,
-      sentToKitchen: params.sent ? true : item.sentToKitchen,
+      sentToKitchen: params.sent
+        ? Boolean(item.sentToKitchen || (!item.isVoided && getItemPrepRoute(item.menuItemId) === 'kitchen'))
+        : item.sentToKitchen,
     }));
 
     const order: Order = {
@@ -1592,6 +1721,12 @@ export default function POSTerminal() {
             requestedBy: user?.name ?? user?.email ?? 'cashier',
             note: 'Unpaid (awaiting bill)',
           });
+        broadcastPaymentTrackingRequest({
+          orderId: parked.id,
+          tableNo: parkedTableNo,
+          total: Number(parked.total ?? orderTotals.total ?? 0),
+          note: 'Unpaid (awaiting bill)',
+        });
           clearOrder();
           setShowPaymentRequests(true);
           toast({
@@ -1640,6 +1775,12 @@ export default function POSTerminal() {
           requestedBy: user?.name ?? user?.email ?? 'cashier',
           note: shouldPark ? 'Unpaid (awaiting bill)' : 'Unpaid (auto-tracked)',
         });
+        broadcastPaymentTrackingRequest({
+          orderId: saved.id,
+          tableNo: Number(selectedTable),
+          total: Number(saved.total ?? orderTotals.total ?? 0),
+          note: shouldPark ? 'Unpaid (awaiting bill)' : 'Unpaid (auto-tracked)',
+        });
       }
       if (shouldPark && isTableOrder) {
         clearOrder();
@@ -1681,8 +1822,18 @@ export default function POSTerminal() {
       // Resolve payment requests in background so receipt appears immediately.
       setTimeout(() => {
         const req = paymentRequests.find((r) => r.orderId === saved.id);
-        if (req) resolvePosPaymentRequest(req.id);
+        if (req) {
+          void deleteNotificationById(req.id);
+          resolvePosPaymentRequest(req.id);
+        }
       }, 0);
+      for (const n of posNotifs) {
+        if (String(n.type ?? '') !== 'tablet_payment_request') continue;
+        const nOrderId = String((n.payload as any)?.orderId ?? '').trim();
+        if (nOrderId && nOrderId === saved.id) {
+          void deleteNotificationById(n.id);
+        }
+      }
 
       // Let table tablets know payment has been confirmed by cashier.
       try {
@@ -1733,6 +1884,12 @@ export default function POSTerminal() {
       orderId: target.id,
       total: Number(target.total ?? orderTotals.total ?? 0),
       requestedBy: user?.name ?? user?.email ?? 'cashier',
+      note: 'Bill presented by cashier',
+    });
+    broadcastPaymentTrackingRequest({
+      orderId: target.id,
+      tableNo,
+      total: Number(target.total ?? orderTotals.total ?? 0),
       note: 'Bill presented by cashier',
     });
     setShowPaymentRequests(true);
@@ -1984,23 +2141,47 @@ export default function POSTerminal() {
             {availableTills.length ? (
               <div className="grid gap-1">
                 <div className="text-xs text-muted-foreground">Select till</div>
-                <Select value={selectedTillId} onValueChange={setSelectedTillId}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Choose a till" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableTills.map((t) => (
-                      <SelectItem key={t.id} value={t.id}>
-                        {t.code} • {t.name}
-                        {t.assignedDeviceId
-                          ? ` • Assigned (${t.assignedDeviceId === deviceId ? 'this device' : t.assignedDeviceId})`
-                          : ' • Unassigned'}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="max-h-56 overflow-auto rounded-md border bg-muted/20 p-2 space-y-2">
+                  {availableTills.map((t) => {
+                    const assignedDevice = String(t.assignedDeviceId ?? '').trim();
+                    const assignedToThisDevice = assignedDevice && assignedDevice.toLowerCase() === String(deviceId).toLowerCase();
+                    const assignedToOtherDevice = assignedDevice && !assignedToThisDevice;
+                    const isSelected = selectedTillId === t.id;
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setSelectedTillId(t.id)}
+                        className={cn(
+                          'w-full rounded-md border p-2.5 text-left transition-colors',
+                          isSelected ? 'border-primary bg-primary/10' : 'border-border bg-background hover:bg-muted/40'
+                        )}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="font-medium text-sm">{t.code} • {t.name}</div>
+                          <span
+                            className={cn(
+                              'text-[11px] rounded-full px-2 py-0.5 border',
+                              assignedToThisDevice
+                                ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-700'
+                                : assignedToOtherDevice
+                                  ? 'bg-amber-500/10 border-amber-500/40 text-amber-700'
+                                  : 'bg-sky-500/10 border-sky-500/40 text-sky-700'
+                            )}
+                          >
+                            {assignedToThisDevice
+                              ? 'Assigned (this device)'
+                              : assignedToOtherDevice
+                                ? `Assigned (${assignedDevice})`
+                                : 'Unassigned'}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
                 <div className="text-[11px] text-muted-foreground">
-                  Assigned tills are shown inline. Selecting one assigned to another device will ask for replacement confirmation.
+                  Tap any till row to select it. If already assigned to another device, you will be asked to confirm replacement.
                 </div>
               </div>
             ) : null}
@@ -2008,7 +2189,7 @@ export default function POSTerminal() {
             {tillSetupError ? <div className="text-sm text-destructive">{tillSetupError}</div> : null}
 
             <div className="flex justify-end gap-2 pt-2">
-              <Button onClick={assignTillToThisDevice} disabled={tillSetupBusy || !selectedTillId}>
+              <Button onClick={() => void assignTillToThisDevice(false)} disabled={tillSetupBusy || !selectedTillId}>
                 Assign till
               </Button>
             </div>
@@ -3108,7 +3289,14 @@ export default function POSTerminal() {
                       >
                         Open & Settle
                       </Button>
-                      <Button size="sm" variant="outline" onClick={() => resolvePosPaymentRequest(r.id)}>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          void deleteNotificationById(r.id);
+                          resolvePosPaymentRequest(r.id);
+                        }}
+                      >
                         Dismiss
                       </Button>
                     </div>

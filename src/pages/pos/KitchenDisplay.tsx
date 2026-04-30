@@ -214,7 +214,9 @@ export default function KitchenDisplay() {
   const activeOrders = useMemo(() => {
     const q = query.trim().toLowerCase();
     const result = orders
-      .filter((o) => ['sent', 'in_progress', 'ready', 'paid', 'open'].includes(o.status))
+      // Cashier-gated flow: keep OPEN tickets out of KDS.
+      // Kitchen should only see tickets after cashier explicitly sends them.
+      .filter((o) => ['sent', 'in_progress', 'ready', 'paid'].includes(o.status))
       // include any order that has kitchen items (even if they're all ready)
       .filter((o) => o.items.some((i) => i.sentToKitchen === true && !i.isVoided))
       .filter((o) => {

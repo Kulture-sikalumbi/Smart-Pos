@@ -766,8 +766,8 @@ export async function sendOrderPayload(orderData: any, itemsData: any[]) {
 export async function fetchAndReplaceOrdersFromSupabase() {
   if (!useRemote) return;
   try {
-    // fetch kitchen items
-    const { data: items, error: itemsErr } = await supabase!
+    // fetch kitchen-queued items
+    const { data: kitchenItems, error: itemsErr } = await supabase!
       .from('pos_order_items')
       .select('*')
       .eq('sent_to_kitchen', true)
@@ -778,7 +778,39 @@ export async function fetchAndReplaceOrdersFromSupabase() {
       return;
     }
 
-    if (!items || items.length === 0) {
+    // fetch tablet orders that are still cashier-controlled (not yet sent to kitchen)
+    const { data: tabletOrders, error: tabletOrdersErr } = await supabase!
+      .from('pos_orders')
+      .select('*')
+      .eq('source', 'tablet')
+      .in('status', ['open', 'sent', 'in_progress', 'ready'])
+      .order('created_at', { ascending: false })
+      .limit(200);
+    if (tabletOrdersErr) {
+      console.warn('[orderStore] fetch tablet orders failed', tabletOrdersErr);
+    }
+
+    const tabletOrderIds = Array.from(new Set((tabletOrders || []).map((r: any) => String(r.id)).filter(Boolean)));
+    let tabletItems: any[] = [];
+    if (tabletOrderIds.length > 0) {
+      const { data, error } = await supabase!
+        .from('pos_order_items')
+        .select('*')
+        .in('order_id', tabletOrderIds)
+        .order('created_at', { ascending: true });
+      if (error) {
+        console.warn('[orderStore] fetch tablet order items failed', error);
+      } else {
+        tabletItems = Array.isArray(data) ? data : [];
+      }
+    }
+
+    const mergedItemsMap = new Map<string, any>();
+    for (const it of kitchenItems || []) mergedItemsMap.set(String(it.id), it);
+    for (const it of tabletItems || []) mergedItemsMap.set(String(it.id), it);
+    const items = Array.from(mergedItemsMap.values());
+
+    if (items.length === 0) {
       // nothing to show — keep non-kitchen orders
       const preserved = getState().orders.filter(o => !o.items.some(it => it.sentToKitchen));
       save({ version: 1, orders: preserved });

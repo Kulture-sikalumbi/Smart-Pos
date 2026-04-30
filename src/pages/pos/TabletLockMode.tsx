@@ -267,13 +267,23 @@ export default function TabletLockMode() {
       const rawOrderId = (data as any)?.order_id;
       const orderId = rawOrderId != null ? String(rawOrderId).trim() : '';
       setCart([]);
-      setSubmitMessage(orderNo ? `Order #${orderNo} placed successfully.` : 'Order placed successfully.');
+      setSubmitMessage(orderNo ? `Order #${orderNo} sent to cashier for confirmation.` : 'Order sent to cashier for confirmation.');
       setLastSubmittedOrder({
         orderId: orderId || undefined,
         orderNo: Number.isFinite(Number(orderNo)) ? Number(orderNo) : undefined,
         status: 'delivered',
         deliveredAt: new Date().toISOString(),
       });
+      // Auto-start payment tracking when tablet sends an order.
+      // This keeps cashier and tablet payment flow aligned without requiring a separate "Request Bill" tap.
+      try {
+        await supabase.rpc('tablet_request_bill', {
+          p_device_id: deviceId,
+          p_submission_key: `auto-bill-${submissionKey}`,
+        });
+      } catch {
+        // Non-blocking: order submission already succeeded.
+      }
     } catch (e: any) {
       setSubmitMessage(e?.message ?? 'Unable to place order.');
     } finally {
