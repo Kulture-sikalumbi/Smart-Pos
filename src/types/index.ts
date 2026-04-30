@@ -56,6 +56,9 @@ export interface StockIssue {
   notes?: string | null;
   createdBy: string | null;
   createdAt?: string;
+  sourceModule?: string | null;
+  locationScope?: string | null;
+  recordedByName?: string | null;
 }
 
 // Stock Movement

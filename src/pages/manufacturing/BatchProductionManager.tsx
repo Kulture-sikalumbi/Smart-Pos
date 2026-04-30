@@ -1,18 +1,86 @@
-import { useEffect, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Factory, Loader2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { PageHeader, DataTableWrapper, NumericCell } from '@/components/common/PageComponents';
 import { ensureBatchProductionsLoaded, getBatchProductionsSnapshot, subscribeBatchProductions } from '@/lib/batchProductionStore';
 import { useCurrency } from '@/contexts/CurrencyContext';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 
 export function BatchProductionManager() {
   const { formatMoneyPrecise } = useCurrency();
   const batches = useSyncExternalStore(subscribeBatchProductions, getBatchProductionsSnapshot);
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
 
   useEffect(() => {
     void ensureBatchProductionsLoaded();
   }, []);
+
+  const applyPreset = (preset: 'today' | 'week' | 'month') => {
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    const today = `${yyyy}-${mm}-${dd}`;
+
+    if (preset === 'today') {
+      setFromDate(today);
+      setToDate(today);
+      return;
+    }
+
+    if (preset === 'week') {
+      const day = now.getDay(); // 0 = Sunday
+      const diffToMonday = day === 0 ? 6 : day - 1;
+      const monday = new Date(now);
+      monday.setDate(now.getDate() - diffToMonday);
+      const mY = monday.getFullYear();
+      const mM = String(monday.getMonth() + 1).padStart(2, '0');
+      const mD = String(monday.getDate()).padStart(2, '0');
+      setFromDate(`${mY}-${mM}-${mD}`);
+      setToDate(today);
+      return;
+    }
+
+    const startOfMonth = `${yyyy}-${mm}-01`;
+    setFromDate(startOfMonth);
+    setToDate(today);
+  };
+
+  const filteredBatches = useMemo(() => {
+    const from = fromDate ? new Date(`${fromDate}T00:00:00`).getTime() : null;
+    const to = toDate ? new Date(`${toDate}T23:59:59`).getTime() : null;
+    return batches.filter((batch) => {
+      const t = new Date(String(batch.batchDate)).getTime();
+      if (!Number.isFinite(t)) return true;
+      if (from !== null && t < from) return false;
+      if (to !== null && t > to) return false;
+      return true;
+    });
+  }, [batches, fromDate, toDate]);
+  const activePreset = useMemo(() => {
+    if (!fromDate || !toDate) return null;
+    const now = new Date();
+    const yyyy = now.getFullYear();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    const today = `${yyyy}-${mm}-${dd}`;
+    const startOfMonth = `${yyyy}-${mm}-01`;
+    const day = now.getDay();
+    const diffToMonday = day === 0 ? 6 : day - 1;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() - diffToMonday);
+    const mY = monday.getFullYear();
+    const mM = String(monday.getMonth() + 1).padStart(2, '0');
+    const mD = String(monday.getDate()).padStart(2, '0');
+    const weekStart = `${mY}-${mM}-${mD}`;
+    if (fromDate === today && toDate === today) return 'today';
+    if (fromDate === weekStart && toDate === today) return 'week';
+    if (fromDate === startOfMonth && toDate === today) return 'month';
+    return null;
+  }, [fromDate, toDate]);
 
   return (
     <div className="space-y-4">
@@ -21,15 +89,47 @@ export function BatchProductionManager() {
         description="Audit previously recorded production batches"
       />
 
-      {batches.length === 0 ? (
+      <Card>
+        <CardContent className="pt-6">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">From date</div>
+              <Input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">To date</div>
+              <Input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+            </div>
+            <div className="flex items-end">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setFromDate('');
+                  setToDate('');
+                }}
+              >
+                Clear filters
+              </Button>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2 mt-3">
+            <Button type="button" size="sm" variant={activePreset === 'today' ? 'default' : 'secondary'} onClick={() => applyPreset('today')}>Today</Button>
+            <Button type="button" size="sm" variant={activePreset === 'week' ? 'default' : 'secondary'} onClick={() => applyPreset('week')}>This Week</Button>
+            <Button type="button" size="sm" variant={activePreset === 'month' ? 'default' : 'secondary'} onClick={() => applyPreset('month')}>This Month</Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {filteredBatches.length === 0 ? (
         <Card>
           <CardContent className="py-10 flex items-center justify-center text-sm text-muted-foreground gap-2">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Loading or no batch history yet...
+            {batches.length === 0 ? 'Loading or no batch history yet...' : 'No batch records for selected dates.'}
           </CardContent>
         </Card>
       ) : (
-        batches.map((batch) => (
+        filteredBatches.map((batch) => (
           <Card key={batch.id}>
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
@@ -40,7 +140,7 @@ export function BatchProductionManager() {
                   <div>
                     <CardTitle className="text-base">{batch.recipeName}</CardTitle>
                     <p className="text-sm text-muted-foreground">
-                      {batch.batchDate} • By {batch.producedBy}
+                      {batch.batchDate} • Batch recorded by {batch.producedBy}
                     </p>
                   </div>
                 </div>

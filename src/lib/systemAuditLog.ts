@@ -1,8 +1,8 @@
 import { SystemAuditLogEntry, SensitiveActionType, GeoLocation } from '@/types';
-import { auditLogStore as seededAuditLogStore } from '@/data/auditLogData';
 import { v4 as uuidv4 } from 'uuid';
 
 const STORAGE_KEY = 'mthunzi.auditLogs.v1';
+const MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000; // 2 days
 
 type AuditLogStateV1 = {
   version: 1;
@@ -21,8 +21,16 @@ function emit() {
 function seedState(): AuditLogStateV1 {
   return {
     version: 1,
-    entries: Array.isArray(seededAuditLogStore) ? seededAuditLogStore.map((e) => ({ ...e })) : [],
+    entries: [],
   };
+}
+
+function pruneEntries(entries: SystemAuditLogEntry[]): SystemAuditLogEntry[] {
+  const cutoff = Date.now() - MAX_AGE_MS;
+  return (entries ?? []).filter((e) => {
+    const ts = new Date(String(e.timestamp ?? '')).getTime();
+    return Number.isFinite(ts) && ts >= cutoff;
+  });
 }
 
 function load(): AuditLogStateV1 {
@@ -38,7 +46,7 @@ function load(): AuditLogStateV1 {
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<AuditLogStateV1>;
       if (parsed && parsed.version === 1 && Array.isArray(parsed.entries)) {
-        cached = { version: 1, entries: parsed.entries as SystemAuditLogEntry[] };
+        cached = { version: 1, entries: pruneEntries(parsed.entries as SystemAuditLogEntry[]) };
         return cached;
       }
     }
@@ -56,9 +64,9 @@ function load(): AuditLogStateV1 {
 }
 
 function save(state: AuditLogStateV1) {
-  cached = state;
+  cached = { version: 1, entries: pruneEntries(state.entries) };
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cached));
   } catch {
     // ignore
   }

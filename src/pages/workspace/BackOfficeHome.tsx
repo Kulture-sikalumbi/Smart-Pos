@@ -1,4 +1,4 @@
-import { ArrowRightLeft, BarChart3, ChefHat, ClipboardCheck, LayoutDashboard, Package, Receipt, Settings, ShoppingCart, Users } from 'lucide-react';
+import { ArrowRightLeft, BarChart3, ChefHat, ClipboardCheck, LayoutDashboard, Package, Receipt, Settings, ShoppingCart, ShieldCheck, Users } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
@@ -18,6 +18,9 @@ const tools: Array<{
   { label: 'Purchases (GRV)', icon: ShoppingCart, path: '/app/purchases', permission: 'viewPurchases' },
   { label: 'Stock Issues', icon: ArrowRightLeft, path: '/app/inventory/stock-issues', permission: 'createStockIssues' },
   { label: 'Stock Take', icon: ClipboardCheck, path: '/app/inventory/stock-take', permission: 'performStockTake' },
+  { label: 'Recipes', icon: ChefHat, path: '/app/manufacturing/recipes', permission: 'recordBatchProduction' },
+  { label: 'Batch History', icon: BarChart3, path: '/app/manufacturing/history', permission: 'recordBatchProduction' },
+  { label: 'Audit Trail', icon: ShieldCheck, path: '/app/audit-dashboard', permission: 'viewReports', roles: ['owner', 'manager', 'front_supervisor'] },
   { label: 'Staff', icon: Users, path: '/app/staff', permission: 'viewStaff' },
   { label: 'Reports', icon: BarChart3, path: '/app/reports', permission: 'viewReports' },
   { label: 'Shift X/Z Reports', icon: Receipt, path: '/app/reports/shifts', permission: 'viewReports' },

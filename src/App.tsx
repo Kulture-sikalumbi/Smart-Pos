@@ -55,6 +55,7 @@ import Landing from './pages/Landing';
 // AuthPage removed: using in-place overlay form instead
 import AuthCallback from './pages/AuthCallback';
 import AdvancedGAAP from "./pages/inventory/AdvancedGAAP";
+import { runTransientDataRetention } from '@/lib/dataRetention';
 
 const queryClient = new QueryClient();
 
@@ -175,6 +176,11 @@ const App = () => {
     return () => {
       if (countdownRef.current) { clearInterval(countdownRef.current as unknown as number); countdownRef.current = null; }
     };
+  }, []);
+
+  useEffect(() => {
+    // Best-effort daily cleanup of transient data only.
+    void runTransientDataRetention();
   }, []);
   if (loading) return (
     <div className="flex items-center justify-center min-h-screen">

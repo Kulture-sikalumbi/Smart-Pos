@@ -756,6 +756,14 @@ export default function StockIssues() {
           const createdAtIso = String(grp.createdAt ?? '');
           const createdAtMs = createdAtIso ? new Date(createdAtIso).getTime() : NaN;
           const canRevoke = Number.isFinite(createdAtMs) && (Date.now() - createdAtMs) <= 5 * 60 * 1000;
+          const issueTypeNorm = String(issueType ?? '').toLowerCase();
+          const recorderLabel = issueTypeNorm.includes('wastage') ? 'Wastage recorded by' : 'Recorded by';
+          const lineMeta = grp.lines?.[0] as any;
+          const recordedByName = String(lineMeta?.recordedByName ?? lineMeta?.recorded_by_name ?? '').trim();
+          const sourceModule = String(lineMeta?.sourceModule ?? lineMeta?.source_module ?? '').trim();
+          const locationScope = String(lineMeta?.locationScope ?? lineMeta?.location_scope ?? '').trim();
+          const displayRecorder = recordedByName || creator || 'Unknown';
+          const displayLocation = locationScope || sourceModule || 'GENERAL';
 
           return (
             <Card key={grp.key}>
@@ -771,7 +779,19 @@ export default function StockIssues() {
                                 <span className="inline-flex items-center px-2 py-0.5 rounded bg-primary text-white text-xs font-semibold">{issueType}</span>
                                 {grp.lines.length > 1 ? <span className="text-sm text-muted-foreground ml-2">{grp.lines.length} items</span> : null}
                               </div>
-                              <p className="text-sm text-white/80">By {creator}</p>
+                              <p className="text-sm text-white/80">
+                                {recorderLabel} {displayRecorder}
+                              </p>
+                              <div className="mt-1 flex items-center gap-2">
+                                <span className="inline-flex items-center px-2 py-0.5 rounded bg-emerald-600/20 text-emerald-200 text-[11px] font-semibold border border-emerald-500/30">
+                                  {String(displayLocation).toUpperCase()}
+                                </span>
+                                {sourceModule ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded bg-blue-600/20 text-blue-200 text-[11px] font-semibold border border-blue-500/30">
+                                    {String(sourceModule).toUpperCase()}
+                                  </span>
+                                ) : null}
+                              </div>
                   </div>
                   <div className="flex items-center gap-3">
                     {canRevoke ? (

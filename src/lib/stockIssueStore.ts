@@ -145,6 +145,9 @@ async function fetchFromDb() {
       notes: r.notes ?? null,
       createdBy: r.created_by ?? r.createdBy ?? null,
       createdAt: r.created_at ?? r.createdAt ?? undefined,
+      sourceModule: r.source_module ?? null,
+      locationScope: r.location_scope ?? null,
+      recordedByName: r.recorded_by_name ?? null,
     }));
 
     cached = { version: 1, issues: rows };
@@ -195,6 +198,9 @@ export async function createStockIssue(params: {
   brandId?: string | null;
   date: string; // YYYY-MM-DD
   createdBy: string;
+  sourceModule?: string;
+  locationScope?: string;
+  recordedByName?: string;
   // Accept either UI-shaped lines or DB-shaped lines. UI: { stockItemId, issueType, qtyIssued, unitCostAtTime, notes }
   // DB: { stock_item_id, issue_type, qty_issued, unit_cost_at_time, total_value_lost, notes }
   lines: Array<
@@ -289,6 +295,9 @@ export async function createStockIssue(params: {
         p_date: params.date,
         p_created_by: params.createdBy,
         p_lines: rpcLines,
+        p_source_module: params.sourceModule ?? null,
+        p_location_scope: params.locationScope ?? null,
+        p_recorded_by_name: params.recordedByName ?? null,
       } as any);
 
       if (!rpcErr) {

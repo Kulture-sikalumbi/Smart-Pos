@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import {
   getOrdersSnapshot,
@@ -31,10 +32,34 @@ import { fetchAndReplaceOrdersFromSupabase } from '@/lib/orderStore';
 import { useAuth } from '@/contexts/AuthContext';
 import { ROLE_NAMES } from '@/types/auth';
 import type { OrderItem } from '@/types/pos';
+import { usePosMenu } from '@/hooks/usePosMenu';
+import { createStockIssue } from '@/lib/stockIssueStore';
+import { getActiveBrandId } from '@/lib/activeBrand';
+import { useToast } from '@/hooks/use-toast';
+import { logSensitiveAction } from '@/lib/systemAuditLog';
+import { getStockItemsSnapshot, subscribeStockItems } from '@/lib/stockStore';
+import { getFrontStockSnapshot, subscribeFrontStock } from '@/lib/frontStockStore';
+import { getManufacturingRecipesSnapshot, subscribeManufacturingRecipes } from '@/lib/manufacturingRecipeStore';
+import { recordBatchProduction, BatchInsufficientStockError } from '@/lib/batchProductionStore';
 // debug viewer removed
 
 export default function KitchenDisplay() {
-  const { user } = useAuth();
+  const { user, accountUser } = useAuth();
+  const { toast } = useToast();
+  const menu = usePosMenu();
+  const menuItemsById = useMemo(() => new Map(menu.items.map((x) => [x.id, x] as const)), [menu.items]);
+  const stockItems = useSyncExternalStore(subscribeStockItems, getStockItemsSnapshot, getStockItemsSnapshot);
+  const frontStock = useSyncExternalStore(subscribeFrontStock, getFrontStockSnapshot, getFrontStockSnapshot);
+  const manufacturingStockItems = useMemo(() => {
+    const mfgItemIds = new Set(
+      (frontStock ?? [])
+        .filter((r) => String(r.locationTag ?? '').toUpperCase() === 'MANUFACTURING')
+        .map((r) => String(r.itemId ?? '').trim())
+        .filter(Boolean)
+    );
+    return stockItems.filter((s) => mfgItemIds.has(String(s.id)));
+  }, [frontStock, stockItems]);
+  const recipes = useSyncExternalStore(subscribeManufacturingRecipes, getManufacturingRecipesSnapshot, getManufacturingRecipesSnapshot);
   // subscribe to DB realtime events for kitchen items
   useKitchenRealtime();
   const prefersReducedMotion = useReducedMotion();
@@ -67,6 +92,76 @@ export default function KitchenDisplay() {
   const prevTicketIdsRef = useRef<Set<string>>(new Set());
   const initializedUrgentRef = useRef(false);
   const prevUrgentIdsRef = useRef<Set<string>>(new Set());
+  const [wasteOpen, setWasteOpen] = useState(false);
+  const [wasteQtyInput, setWasteQtyInput] = useState('1');
+  const [wasteReason, setWasteReason] = useState('Kitchen damage');
+  const [wasteStockItemId, setWasteStockItemId] = useState('');
+  const [wasteBusy, setWasteBusy] = useState(false);
+  const [wasteError, setWasteError] = useState<string | null>(null);
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchRecipeId, setBatchRecipeId] = useState('');
+  const [batchDate, setBatchDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [batchActualOutput, setBatchActualOutput] = useState(0);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const selectedWasteStockItem = useMemo(
+    () => manufacturingStockItems.find((s) => String(s.id) === String(wasteStockItemId)) ?? null,
+    [manufacturingStockItems, wasteStockItemId]
+  );
+  const selectedWasteUnitLabel = useMemo(() => {
+    const unitType = String((selectedWasteStockItem as any)?.unitType ?? '').toUpperCase();
+    if (unitType === 'KG') return 'kg';
+    if (unitType === 'LTRS') return 'ltrs';
+    if (unitType === 'PACK') return 'pack';
+    return 'each';
+  }, [selectedWasteStockItem]);
+  const selectedWasteAllowsDecimal = useMemo(() => {
+    const unitType = String((selectedWasteStockItem as any)?.unitType ?? '').toUpperCase();
+    return unitType === 'KG' || unitType === 'LTRS';
+  }, [selectedWasteStockItem]);
+  const selectedWasteFrontRow = useMemo(
+    () =>
+      (frontStock ?? []).find(
+        (r) =>
+          String(r.itemId ?? '') === String(wasteStockItemId) &&
+          String(r.locationTag ?? '').toUpperCase() === 'MANUFACTURING'
+      ) ?? null,
+    [frontStock, wasteStockItemId]
+  );
+  const selectedWasteAvailableQty = useMemo(() => Number(selectedWasteFrontRow?.quantity ?? 0) || 0, [selectedWasteFrontRow]);
+  const parsedWasteQty = useMemo(() => {
+    const raw = Number(String(wasteQtyInput ?? '').trim());
+    return Number.isFinite(raw) ? raw : 0;
+  }, [wasteQtyInput]);
+  const wasteRemainingQty = useMemo(() => selectedWasteAvailableQty - parsedWasteQty, [selectedWasteAvailableQty, parsedWasteQty]);
+  const wasteQtyExceedsAvailable = useMemo(
+    () => parsedWasteQty > 0 && parsedWasteQty > selectedWasteAvailableQty + 1e-9,
+    [parsedWasteQty, selectedWasteAvailableQty]
+  );
+  const selectedBatchRecipe = useMemo(() => recipes.find((r) => r.id === batchRecipeId) ?? null, [recipes, batchRecipeId]);
+  const batchIngredientPreview = useMemo(() => {
+    if (!selectedBatchRecipe) return [];
+    const outputQty = Number(selectedBatchRecipe.outputQty ?? 0) > 0 ? Number(selectedBatchRecipe.outputQty ?? 0) : 1;
+    const multiplier = (Number(batchActualOutput) || 0) / outputQty;
+    const mfgRows = (frontStock ?? []).filter((r) => String(r.locationTag ?? '').toUpperCase() === 'MANUFACTURING');
+    const onHandByItem = new Map(mfgRows.map((r) => [String(r.itemId ?? ''), Number(r.quantity ?? 0) || 0] as const));
+    return selectedBatchRecipe.ingredients.map((ing) => {
+      const requiredQty = Math.max(0, Number(ing.requiredQty ?? 0) * multiplier);
+      const onHandQty = onHandByItem.get(String(ing.ingredientId ?? '')) ?? 0;
+      return {
+        id: String(ing.id ?? ''),
+        ingredientName: String(ing.ingredientName ?? 'Ingredient'),
+        unitType: String(ing.unitType ?? ''),
+        requiredQty,
+        onHandQty,
+        insufficient: requiredQty > onHandQty + 1e-9,
+      };
+    });
+  }, [selectedBatchRecipe, batchActualOutput, frontStock]);
+  const batchHasInsufficientStock = useMemo(() => batchIngredientPreview.some((x) => x.insufficient), [batchIngredientPreview]);
+  const wasteReasonSuggestions = useMemo(
+    () => ['Spillage', 'Burnt', 'Damaged while prep', 'Expired in kitchen', 'Portioning error'],
+    []
+  );
 
   function ensureAudioContext() {
     if (typeof window === 'undefined') return null;
@@ -139,7 +234,9 @@ export default function KitchenDisplay() {
         // ignore
       }
     });
-    return () => unsub();
+    return () => {
+      unsub();
+    };
   }, []);
 
   const kitchenKey = useMemo(() => {
@@ -154,14 +251,14 @@ export default function KitchenDisplay() {
     // then fall back to preparedAt and DB-backed `kitchenStatus`.
     const localKey = kitchenKey.get(`${order.id}:${item.id}`);
     if (localKey) {
-      if (localKey === 'ready' || localKey === 'served') return 'ready';
-      if (localKey === 'preparing' || localKey === 'in_progress') return 'preparing';
+      if (localKey === 'ready') return 'ready';
+      if (localKey === 'preparing') return 'preparing';
       return 'pending';
     }
 
     if (item.preparedAt) return 'ready';
 
-    const ks = (item as any).kitchenStatus ?? undefined;
+    const ks = String((item as any).kitchenStatus ?? '').toLowerCase();
     if (ks) {
       if (ks === 'ready' || ks === 'served') return 'ready';
       if (ks === 'preparing' || ks === 'in_progress') return 'preparing';
@@ -348,10 +445,7 @@ export default function KitchenDisplay() {
         acc[it.menuItemId] = { ...it };
       } else {
         acc[it.menuItemId].quantity += it.quantity;
-        // Optionally, merge statuses: if any is not ready, show the least advanced status
-        if (getItemStatus(order, it) !== 'ready') {
-          acc[it.menuItemId].status = getItemStatus(order, it);
-        }
+        // Grouped rows are rendered with live status via getItemStatus per original line item.
       }
       return acc;
     }, {}));
@@ -507,6 +601,145 @@ export default function KitchenDisplay() {
       </motion.div>
     );
   }
+
+  const submitKitchenWaste = async () => {
+    if (!user?.id) return;
+    const stockItemId = String(wasteStockItemId ?? '').trim();
+    if (!stockItemId) {
+      setWasteError('Select a stock item to record wastage.');
+      return;
+    }
+    const rawQty = String(wasteQtyInput ?? '').trim();
+    if (!rawQty) {
+      setWasteError('Enter quantity.');
+      return;
+    }
+    const parsedQty = Number(rawQty);
+    if (!Number.isFinite(parsedQty) || parsedQty <= 0) {
+      setWasteError('Quantity must be greater than 0.');
+      return;
+    }
+    if (!selectedWasteAllowsDecimal && !Number.isInteger(parsedQty)) {
+      setWasteError('This item uses whole numbers only.');
+      return;
+    }
+    const qty = selectedWasteAllowsDecimal ? Math.max(0.01, parsedQty) : Math.max(1, Math.floor(parsedQty));
+    if (qty > selectedWasteAvailableQty + 1e-9) {
+      setWasteError(`Insufficient stock. Available: ${selectedWasteAvailableQty} ${selectedWasteUnitLabel}.`);
+      return;
+    }
+    const safeQty = qty;
+    const brandId = String(getActiveBrandId() ?? '').trim();
+    if (!brandId) {
+      setWasteError('No active brand selected.');
+      return;
+    }
+    setWasteError(null);
+    setWasteBusy(true);
+    try {
+      const selectedStock = stockItems.find((s) => s.id === stockItemId);
+      await createStockIssue({
+        brandId,
+        date: new Date().toISOString().slice(0, 10),
+        // stock_issues.created_by references auth.users(id); for PIN/staff sessions
+        // use empty string so RPC stores NULL instead of invalid foreign key.
+        createdBy: String(accountUser?.id ?? ''),
+        sourceModule: 'kitchen',
+        locationScope: 'MANUFACTURING',
+        recordedByName: String(user?.name ?? ''),
+        lines: [
+          {
+            stock_item_id: stockItemId,
+            issue_type: 'Wastage',
+            qty_issued: safeQty,
+            notes: `[Kitchen] ${wasteReason.trim() || 'Kitchen wastage'}`,
+          },
+        ],
+      } as any);
+      await logSensitiveAction({
+        userId: String(user.id),
+        userName: String(user.name ?? 'Kitchen'),
+        actionType: 'stock_take_record',
+        reference: stockItemId,
+        previousValue: 'on_hand',
+        newValue: `wastage:${safeQty}`,
+        notes: `Kitchen wastage - ${selectedStock?.name ?? 'stock item'}`,
+      });
+      toast({ title: 'Wastage recorded', description: `${safeQty} unit(s) logged.` });
+      setWasteOpen(false);
+      setWasteStockItemId('');
+    } catch (e: any) {
+      const raw = String(e?.message ?? 'Could not record wastage.');
+      const msg =
+        /insufficient|not enough/i.test(raw)
+          ? 'Not enough stock for that quantity.'
+          : /front_stock row not found/i.test(raw)
+            ? 'This ingredient is not set up in kitchen stock yet. Ask admin to add it to MANUFACTURING stock.'
+            : 'Could not record wastage. Please try again.';
+      setWasteError(msg);
+      toast({ title: 'Wastage failed', description: msg, variant: 'destructive' });
+    } finally {
+      setWasteBusy(false);
+    }
+  };
+
+  const openBatchModal = () => {
+    const first = recipes[0] ?? null;
+    setBatchRecipeId(String(first?.id ?? ''));
+    setBatchActualOutput(Number(first?.outputQty ?? 0) || 0);
+    setBatchDate(new Date().toISOString().slice(0, 10));
+    setBatchOpen(true);
+  };
+
+  const submitBatchRecord = async () => {
+    const recipe = recipes.find((r) => r.id === batchRecipeId) ?? null;
+    if (!recipe) {
+      toast({ title: 'Recipe required', description: 'Select a recipe first.', variant: 'destructive' });
+      return;
+    }
+    const actual = Number(batchActualOutput);
+    if (!Number.isFinite(actual) || actual <= 0) {
+      toast({ title: 'Invalid output', description: 'Actual output must be greater than 0.', variant: 'destructive' });
+      return;
+    }
+    setBatchBusy(true);
+    try {
+      await recordBatchProduction({
+        recipeId: recipe.id,
+        batchDate,
+        theoreticalOutput: Number(recipe.outputQty ?? actual) || actual,
+        actualOutput: actual,
+        producedBy: `${String(user?.name ?? 'Kitchen Staff')} (Kitchen/MANUFACTURING)`,
+      });
+      await logSensitiveAction({
+        userId: String(user?.id ?? 'unknown'),
+        userName: String(user?.name ?? 'Kitchen'),
+        actionType: 'batch_production_record',
+        reference: recipe.id,
+        previousValue: recipe.parentItemName,
+        newValue: String(actual),
+        notes: `Batch recorded in kitchen modal for ${recipe.parentItemName}`,
+      });
+      toast({ title: 'Batch recorded', description: `${recipe.parentItemName} production saved.` });
+      setBatchOpen(false);
+    } catch (e: any) {
+      if (e instanceof BatchInsufficientStockError) {
+        toast({
+          title: 'Insufficient stock',
+          description: 'Not enough manufacturing stock for this batch.',
+          variant: 'destructive',
+        });
+      } else {
+        toast({
+          title: 'Batch failed',
+          description: 'Could not record batch. Check stock and try again.',
+          variant: 'destructive',
+        });
+      }
+    } finally {
+      setBatchBusy(false);
+    }
+  };
   
   return (
     <div className="p-4">
@@ -517,6 +750,23 @@ export default function KitchenDisplay() {
         actions={
           user ? (
             <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setWasteQtyInput('1');
+                  setWasteReason('Kitchen damage');
+                  setWasteStockItemId('');
+                  setWasteError(null);
+                  setWasteOpen(true);
+                }}
+              >
+                Record Wastage
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={openBatchModal}>
+                Record Batch
+              </Button>
               <Badge variant="secondary" className="max-w-[240px] truncate">
                 {user.name}
               </Badge>
@@ -665,6 +915,157 @@ export default function KitchenDisplay() {
           </Card>
         </TabsContent>
       </Tabs>
+      <Dialog open={wasteOpen} onOpenChange={setWasteOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Record Wastage</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="text-sm text-muted-foreground">
+              Use this when ingredients are lost (spillage, burn, breakage).
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Ingredient</div>
+              <select
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                value={wasteStockItemId}
+                onChange={(e) => setWasteStockItemId(e.target.value)}
+              >
+                <option value="">Select ingredient...</option>
+                {manufacturingStockItems.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+              <div className="text-xs text-muted-foreground">Only kitchen ingredients are shown.</div>
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Quantity</div>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  min={selectedWasteAllowsDecimal ? 0.01 : 1}
+                  step={selectedWasteAllowsDecimal ? 0.01 : 1}
+                  value={wasteQtyInput}
+                  onChange={(e) => setWasteQtyInput(e.target.value)}
+                />
+                <div className="min-w-[78px] h-10 px-3 rounded-md border bg-muted/40 flex items-center justify-center text-base font-semibold uppercase tracking-wide">
+                  {selectedWasteUnitLabel}
+                </div>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {!selectedWasteAllowsDecimal ? ' (whole numbers only)' : ' (decimals allowed)'}
+              </div>
+              {wasteStockItemId ? (
+                <div className="text-xs text-muted-foreground">
+                  Available: <span className="font-semibold text-foreground">{selectedWasteAvailableQty}</span> {selectedWasteUnitLabel}
+                  {parsedWasteQty > 0 ? (
+                    <>
+                      {' '}• Remaining after save: <span className={cn('font-semibold', wasteRemainingQty < 0 ? 'text-destructive' : 'text-foreground')}>{wasteRemainingQty}</span> {selectedWasteUnitLabel}
+                    </>
+                  ) : null}
+                </div>
+              ) : null}
+              {wasteQtyExceedsAvailable ? (
+                <div className="text-xs text-destructive">Entered quantity is more than available stock.</div>
+              ) : null}
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Reason</div>
+              <Input value={wasteReason} onChange={(e) => setWasteReason(e.target.value)} placeholder="e.g. Burnt / Cracked / Spillage" />
+              <div className="flex flex-wrap gap-2 pt-1">
+                {wasteReasonSuggestions.map((reason) => (
+                  <Button
+                    key={reason}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => setWasteReason(reason)}
+                    disabled={wasteBusy}
+                  >
+                    {reason}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            {wasteError ? <div className="text-sm text-destructive">{wasteError}</div> : null}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setWasteOpen(false)} disabled={wasteBusy}>Cancel</Button>
+              <Button type="button" onClick={() => void submitKitchenWaste()} disabled={wasteBusy || wasteQtyExceedsAvailable}>
+                {wasteBusy ? 'Saving...' : 'Record Wastage'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={batchOpen} onOpenChange={setBatchOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Record Batch</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Recipe</div>
+              <select
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                value={batchRecipeId}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setBatchRecipeId(id);
+                  const next = recipes.find((r) => r.id === id);
+                  setBatchActualOutput(Number(next?.outputQty ?? 0) || 0);
+                }}
+              >
+                <option value="">Select recipe...</option>
+                {recipes.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.parentItemName} ({r.outputQty} {r.outputUnitType})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Date</div>
+              <Input type="date" value={batchDate} onChange={(e) => setBatchDate(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Actual Output</div>
+              <Input
+                type="number"
+                min={0}
+                value={batchActualOutput}
+                onChange={(e) => setBatchActualOutput(Number(e.target.value) || 0)}
+              />
+            </div>
+            {selectedBatchRecipe ? (
+              <div className="space-y-2 rounded-md border p-3">
+                <div className="text-sm font-medium">Stock check before save</div>
+                <div className="space-y-1 text-xs">
+                  {batchIngredientPreview.map((row) => (
+                    <div key={row.id} className={cn('flex items-center justify-between gap-3', row.insufficient ? 'text-destructive' : 'text-muted-foreground')}>
+                      <span className="truncate">{row.ingredientName}</span>
+                      <span>
+                        need {row.requiredQty.toFixed(2)} / available {row.onHandQty.toFixed(2)} {row.unitType}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {batchHasInsufficientStock ? (
+                  <div className="text-xs text-destructive">Cannot save yet: one or more ingredients are not enough.</div>
+                ) : null}
+              </div>
+            ) : null}
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setBatchOpen(false)} disabled={batchBusy}>Cancel</Button>
+              <Button type="button" onClick={() => void submitBatchRecord()} disabled={batchBusy || batchHasInsufficientStock}>
+                {batchBusy ? 'Saving...' : 'Record Batch'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
       
     </div>
   );

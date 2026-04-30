@@ -39,6 +39,8 @@ import { supabase } from '@/lib/supabaseClient';
 import { useCurrency } from '@/contexts/CurrencyContext';
 import { getFrontStockSnapshot, subscribeFrontStock } from '@/lib/frontStockStore';
 import { getActiveBrandId } from '@/lib/activeBrand';
+import { logSensitiveAction } from '@/lib/systemAuditLog';
+import { createStockIssue } from '@/lib/stockIssueStore';
 
 type SessionReceiptRow = {
   id: string;
@@ -97,12 +99,54 @@ export default function POSTerminal() {
   const [incomingOrders, setIncomingOrders] = useState<Array<{ id: string; orderNo: number; tableNo?: number; tableLabel?: string; total: number; source?: string; createdAt: string }>>([]);
   const [incomingCalls, setIncomingCalls] = useState<Array<{ id: string; kind: 'waiter_call' | 'payment_request'; tableNo?: number; tableLabel?: string; createdAt: string }>>([]);
   const [showIncomingOrders, setShowIncomingOrders] = useState(false);
+  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [overrideBusy, setOverrideBusy] = useState(false);
+  const [overrideEmail, setOverrideEmail] = useState('');
+  const [overridePin, setOverridePin] = useState('');
+  const [overrideReason, setOverrideReason] = useState('');
+  const [overrideReasonCode, setOverrideReasonCode] = useState('manager_approval');
+  const [overrideError, setOverrideError] = useState<string | null>(null);
+  const overrideResolverRef = useRef<((ok: boolean) => void) | null>(null);
+  const [overrideGrants, setOverrideGrants] = useState<{ discountUntil?: number; voidUntil?: number }>({});
+  const [kitchenWasteOpen, setKitchenWasteOpen] = useState(false);
+  const [kitchenWasteQty, setKitchenWasteQty] = useState<number>(1);
+  const [kitchenWasteReason, setKitchenWasteReason] = useState('Cancelled after kitchen send');
+  const [kitchenWasteBusy, setKitchenWasteBusy] = useState(false);
+  const kitchenWasteContextRef = useRef<{
+    menuItemId: string;
+    menuItemName: string;
+    qtyReduced: number;
+    resolve: (res: { approved: boolean; captureWaste: boolean; qty: number; reason: string }) => void;
+  } | null>(null);
   const syncedPaymentNotifIdsRef = useRef<Set<string>>(new Set());
   const posNotifs = useSyncExternalStore(subscribePosNotifications, getPosNotificationsSnapshot);
   const requestNotifs = useMemo(
     () => posNotifs.filter((n) => String(n.type ?? '') !== 'waiter_call' && String(n.type ?? '') !== 'tablet_order_seen'),
     [posNotifs]
   );
+  const hasOverrideGrant = (kind: 'discount' | 'void') => {
+    const now = Date.now();
+    const exp = kind === 'discount' ? Number(overrideGrants.discountUntil ?? 0) : Number(overrideGrants.voidUntil ?? 0);
+    return Number.isFinite(exp) && exp > now;
+  };
+
+  const requestSupervisorOverride = (reason: string): Promise<boolean> => {
+    setOverrideReason(reason);
+    setOverrideReasonCode('manager_approval');
+    setOverrideError(null);
+    setOverrideEmail('');
+    setOverridePin('');
+    setOverrideOpen(true);
+    return new Promise<boolean>((resolve) => {
+      overrideResolverRef.current = resolve;
+    });
+  };
+
+  const resolveOverrideRequest = (ok: boolean) => {
+    const resolver = overrideResolverRef.current;
+    overrideResolverRef.current = null;
+    if (resolver) resolver(ok);
+  };
   const seenTabletOrderIdsFromNotifs = useMemo(() => {
     const ids = new Set<string>();
     for (const n of posNotifs) {
@@ -991,15 +1035,18 @@ export default function POSTerminal() {
           if ((n.type === 'waiter_call' || n.type === 'tablet_payment_request') && !seenIncomingCallNotifIdsRef.current.has(n.id)) {
             seenIncomingCallNotifIdsRef.current.add(n.id);
             if (fresh) {
+              const parsedTableNo = Number(n.payload?.tableNo);
+              const incomingKind: 'payment_request' | 'waiter_call' =
+                n.type === 'tablet_payment_request' ? 'payment_request' : 'waiter_call';
               setIncomingCalls((prev) => [
                 {
                   id: String(n.id),
-                  kind: n.type === 'tablet_payment_request' ? 'payment_request' : 'waiter_call',
-                  tableNo: n.payload?.tableNo != null ? Number(n.payload.tableNo) : undefined,
+                  kind: incomingKind,
+                  tableNo: Number.isFinite(parsedTableNo) && parsedTableNo > 0 ? parsedTableNo : undefined,
                   tableLabel: n.payload?.tableLabel != null ? String(n.payload.tableLabel) : undefined,
                   createdAt: String(n.created_at ?? new Date().toISOString()),
                 },
-                ...prev,
+                ...prev.filter((x) => String(x.id) !== String(n.id)),
               ].slice(0, 50));
             }
           }
@@ -1160,6 +1207,62 @@ export default function POSTerminal() {
     } catch {}
   }
 
+  const submitOverrideApproval = async () => {
+    if (!supabase) return;
+    const email = overrideEmail.trim();
+    const pin = overridePin.trim();
+    if (!email) {
+      setOverrideError('Supervisor/admin email is required.');
+      return;
+    }
+    if (!/^\d{4}$/.test(pin)) {
+      setOverrideError('Enter a valid 4-digit PIN.');
+      return;
+    }
+    setOverrideBusy(true);
+    setOverrideError(null);
+    try {
+      const { data, error } = await supabase.rpc('under_brand_staff_login', { p_email: email, p_pin: pin });
+      if (error) {
+        setOverrideError(String(error.message ?? 'Override verification failed.'));
+        return;
+      }
+      const row = Array.isArray(data) ? data[0] : (data as any);
+      const role = String(row?.role ?? '').toLowerCase();
+      const allowed = role === 'owner' || role === 'manager' || role === 'front_supervisor';
+      if (!allowed) {
+        setOverrideError('Only owner/manager/supervisor can approve this action.');
+        return;
+      }
+      const now = Date.now();
+      const grantUntil = now + 2 * 60 * 1000;
+      setOverrideGrants((prev) => ({
+        ...prev,
+        discountUntil: grantUntil,
+        voidUntil: grantUntil,
+      }));
+      try {
+        await logSensitiveAction({
+          userId: String(user?.id ?? 'unknown'),
+          userName: String(user?.name ?? 'Unknown'),
+          actionType: 'manager_override',
+          previousValue: 'cashier_action_blocked',
+          newValue: `approved_by:${String(row?.name ?? email)} (${role})`,
+          notes: overrideReason || 'Manager override approved',
+          reference: `reason_code:${overrideReasonCode}`,
+        });
+      } catch {
+        // non-blocking audit fallback
+      }
+      setOverrideOpen(false);
+      resolveOverrideRequest(true);
+    } catch (e: any) {
+      setOverrideError(e?.message ?? 'Override verification failed.');
+    } finally {
+      setOverrideBusy(false);
+    }
+  };
+
   const filteredItems = useMemo(() => {
     const base = items.filter((i) => i.isAvailable);
     if (selectedCategory === ALL_CATEGORY_ID) return base;
@@ -1277,8 +1380,8 @@ export default function POSTerminal() {
           const nextQty = oi.quantity + safeQty;
           const check = canSetMenuItemQty(menuItem, nextQty);
           if (!check.ok) {
-            setStockBlockTitle(check.title ?? 'Not enough stock');
-            setStockBlockDescription(check.description ?? 'Insufficient stock to add this quantity.');
+            setStockBlockTitle(('title' in check ? check.title : undefined) ?? 'Not enough stock');
+            setStockBlockDescription(('description' in check ? check.description : undefined) ?? 'Insufficient stock to add this quantity.');
             setShowStockBlocked(true);
             return oi;
           }
@@ -1291,8 +1394,8 @@ export default function POSTerminal() {
       }
       const check = canSetMenuItemQty(menuItem, safeQty);
       if (!check.ok) {
-        setStockBlockTitle(check.title ?? 'Not enough stock');
-        setStockBlockDescription(check.description ?? 'Insufficient stock to add this quantity.');
+        setStockBlockTitle(('title' in check ? check.title : undefined) ?? 'Not enough stock');
+        setStockBlockDescription(('description' in check ? check.description : undefined) ?? 'Insufficient stock to add this quantity.');
         setShowStockBlocked(true);
         return prevOrderItems;
       }
@@ -1342,8 +1445,8 @@ export default function POSTerminal() {
     if (existing) {
       const check = canSetMenuItemQty(menuItem, existing.quantity + 1);
       if (!check.ok) {
-        setStockBlockTitle(check.title ?? 'Not enough stock');
-        setStockBlockDescription(check.description ?? 'Insufficient stock to add this quantity.');
+        setStockBlockTitle(('title' in check ? check.title : undefined) ?? 'Not enough stock');
+        setStockBlockDescription(('description' in check ? check.description : undefined) ?? 'Insufficient stock to add this quantity.');
         setShowStockBlocked(true);
         return;
       }
@@ -1363,8 +1466,8 @@ export default function POSTerminal() {
 
     const check = canSetMenuItemQty(menuItem, 1);
     if (!check.ok) {
-      setStockBlockTitle(check.title ?? 'Not enough stock');
-      setStockBlockDescription(check.description ?? 'Insufficient stock to add this quantity.');
+      setStockBlockTitle(('title' in check ? check.title : undefined) ?? 'Not enough stock');
+      setStockBlockDescription(('description' in check ? check.description : undefined) ?? 'Insufficient stock to add this quantity.');
       setShowStockBlocked(true);
       return;
     }
@@ -1416,7 +1519,28 @@ export default function POSTerminal() {
     );
   };
   
-  const updateQuantity = (itemId: string, delta: number) => {
+  const updateQuantity = async (itemId: string, delta: number) => {
+    const target = orderItems.find((x) => x.id === itemId);
+    if (!target) return;
+    const nextQty = Math.max(0, target.quantity + delta);
+    const reducingSentItem = Boolean(target.sentToKitchen) && nextQty < target.quantity;
+    if (reducingSentItem) {
+      const qtyReduced = target.quantity - nextQty;
+      const wasteDecision = await askKitchenWasteDecision({
+        menuItemId: target.menuItemId,
+        menuItemName: target.menuItemName,
+        qtyReduced,
+      });
+      if (!wasteDecision.approved) return;
+      if (wasteDecision.captureWaste) {
+        await tryRecordKitchenWastage({
+          menuItemId: target.menuItemId,
+          menuItemName: target.menuItemName,
+          qty: wasteDecision.qty,
+          reason: wasteDecision.reason,
+        });
+      }
+    }
     const updated = orderItems.map(item => {
       if (item.id === itemId) {
         const newQty = Math.max(0, item.quantity + delta);
@@ -1424,8 +1548,8 @@ export default function POSTerminal() {
         if (mi) {
           const check = canSetMenuItemQty(mi, newQty);
           if (!check.ok) {
-            setStockBlockTitle(check.title ?? 'Not enough stock');
-            setStockBlockDescription(check.description ?? 'Insufficient stock to set this quantity.');
+            setStockBlockTitle(('title' in check ? check.title : undefined) ?? 'Not enough stock');
+            setStockBlockDescription(('description' in check ? check.description : undefined) ?? 'Insufficient stock to set this quantity.');
             setShowStockBlocked(true);
             return item;
           }
@@ -1439,9 +1563,45 @@ export default function POSTerminal() {
       return item;
     }).filter(item => item.quantity > 0);
     setOrderItems(updated);
+    if (reducingSentItem) {
+      try {
+        await logSensitiveAction({
+          userId: String(user?.id ?? 'unknown'),
+          userName: String(user?.name ?? 'Unknown'),
+          actionType: 'void',
+          reference: target.menuItemId,
+          previousValue: target.quantity,
+          newValue: nextQty,
+          notes: `Kitchen-sent item adjusted: ${target.menuItemName}`,
+        });
+      } catch {
+        // non-blocking
+      }
+    }
   };
 
-  const setQuantity = (itemId: string, qty: number) => {
+  const setQuantity = async (itemId: string, qty: number) => {
+    const target = orderItems.find((x) => x.id === itemId);
+    if (!target) return;
+    const nextQtyRequested = Math.max(0, Math.floor(qty));
+    const reducingSentItem = Boolean(target.sentToKitchen) && nextQtyRequested < target.quantity;
+    if (reducingSentItem) {
+      const qtyReduced = target.quantity - nextQtyRequested;
+      const wasteDecision = await askKitchenWasteDecision({
+        menuItemId: target.menuItemId,
+        menuItemName: target.menuItemName,
+        qtyReduced,
+      });
+      if (!wasteDecision.approved) return;
+      if (wasteDecision.captureWaste) {
+        await tryRecordKitchenWastage({
+          menuItemId: target.menuItemId,
+          menuItemName: target.menuItemName,
+          qty: wasteDecision.qty,
+          reason: wasteDecision.reason,
+        });
+      }
+    }
     const updated = orderItems
       .map(item => {
         if (item.id !== itemId) return item;
@@ -1450,8 +1610,8 @@ export default function POSTerminal() {
         if (mi) {
           const check = canSetMenuItemQty(mi, nextQty);
           if (!check.ok) {
-            setStockBlockTitle(check.title ?? 'Not enough stock');
-            setStockBlockDescription(check.description ?? 'Insufficient stock to set this quantity.');
+            setStockBlockTitle(('title' in check ? check.title : undefined) ?? 'Not enough stock');
+            setStockBlockDescription(('description' in check ? check.description : undefined) ?? 'Insufficient stock to set this quantity.');
             setShowStockBlocked(true);
             return item;
           }
@@ -1464,10 +1624,31 @@ export default function POSTerminal() {
       })
       .filter(item => item.quantity > 0);
     setOrderItems(updated);
+    if (reducingSentItem) {
+      try {
+        await logSensitiveAction({
+          userId: String(user?.id ?? 'unknown'),
+          userName: String(user?.name ?? 'Unknown'),
+          actionType: 'void',
+          reference: target.menuItemId,
+          previousValue: target.quantity,
+          newValue: nextQtyRequested,
+          notes: `Kitchen-sent item qty changed: ${target.menuItemName}`,
+        });
+      } catch {
+        // non-blocking
+      }
+    }
   };
 
-  const setDiscountPercent = (itemId: string, discountPercent: number) => {
+  const setDiscountPercent = async (itemId: string, discountPercent: number) => {
+    if (!(hasPermission('applyDiscounts') || hasOverrideGrant('discount'))) {
+      const target = orderItems.find((x) => x.id === itemId);
+      const approved = await requestSupervisorOverride(`Apply discount to item: ${target?.menuItemName ?? 'order item'}`);
+      if (!approved) return;
+    }
     const d = Math.min(100, Math.max(0, discountPercent));
+    const prevDiscount = orderItems.find((x) => x.id === itemId)?.discountPercent ?? 0;
     const updated = orderItems.map(item => {
       if (item.id !== itemId) return item;
       return {
@@ -1477,6 +1658,108 @@ export default function POSTerminal() {
       };
     });
     setOrderItems(updated);
+    try {
+      await logSensitiveAction({
+        userId: String(user?.id ?? 'unknown'),
+        userName: String(user?.name ?? 'Unknown'),
+        actionType: 'discount',
+        reference: itemId,
+        previousValue: Number(prevDiscount),
+        newValue: Number(d),
+        notes: 'Item-level discount updated',
+      });
+    } catch {
+      // non-blocking
+    }
+  };
+
+  const setOrderDiscountPercentSafe = async (discountPercent: number) => {
+    const d = Math.min(100, Math.max(0, Number(discountPercent) || 0));
+    if (!(hasPermission('applyDiscounts') || hasOverrideGrant('discount'))) {
+      const approved = await requestSupervisorOverride('Apply order-level discount');
+      if (!approved) return;
+    }
+    const prev = Number(orderDiscountPercent ?? 0);
+    setOrderDiscountPercent(d);
+    try {
+      await logSensitiveAction({
+        userId: String(user?.id ?? 'unknown'),
+        userName: String(user?.name ?? 'Unknown'),
+        actionType: 'discount',
+        reference: activeOrderId ?? 'active-order',
+        previousValue: prev,
+        newValue: d,
+        notes: 'Order-level discount updated',
+      });
+    } catch {
+      // non-blocking
+    }
+  };
+
+  const askKitchenWasteDecision = (params: { menuItemId: string; menuItemName: string; qtyReduced: number }) =>
+    new Promise<{ approved: boolean; captureWaste: boolean; qty: number; reason: string }>((resolve) => {
+      kitchenWasteContextRef.current = { ...params, resolve };
+      setKitchenWasteQty(Math.max(1, Math.floor(params.qtyReduced)));
+      setKitchenWasteReason('Cancelled after kitchen send');
+      setKitchenWasteOpen(true);
+    });
+
+  const finalizeKitchenWasteDecision = (res: { approved: boolean; captureWaste: boolean; qty: number; reason: string }) => {
+    const ctx = kitchenWasteContextRef.current;
+    kitchenWasteContextRef.current = null;
+    setKitchenWasteOpen(false);
+    if (ctx?.resolve) ctx.resolve(res);
+  };
+
+  const tryRecordKitchenWastage = async (params: { menuItemId: string; menuItemName: string; qty: number; reason: string }) => {
+    const qty = Math.max(0, Math.floor(Number(params.qty) || 0));
+    if (qty <= 0) return;
+    const menuItem = items.find((x) => x.id === params.menuItemId);
+    const stockItemId = String((menuItem as any)?.physicalStockItemId ?? '').trim();
+    const brandId = String(getActiveBrandId() ?? '').trim();
+    const createdBy = String(user?.id ?? '').trim();
+    if (!stockItemId || !brandId || !createdBy) {
+      await logSensitiveAction({
+        userId: String(user?.id ?? 'unknown'),
+        userName: String(user?.name ?? 'Unknown'),
+        actionType: 'stock_take_record',
+        reference: params.menuItemId,
+        notes: `Wastage skipped (mapping missing): ${params.menuItemName}, qty ${qty}, reason: ${params.reason}`,
+      });
+      return;
+    }
+    try {
+      await createStockIssue({
+        brandId,
+        date: new Date().toISOString().slice(0, 10),
+        createdBy,
+        lines: [
+          {
+            stock_item_id: stockItemId,
+            issue_type: 'Wastage',
+            qty_issued: qty,
+            notes: `Kitchen void wastage - ${params.reason}`,
+          },
+        ],
+      } as any);
+      await logSensitiveAction({
+        userId: String(user?.id ?? 'unknown'),
+        userName: String(user?.name ?? 'Unknown'),
+        actionType: 'stock_take_record',
+        reference: stockItemId,
+        previousValue: 'on_hand',
+        newValue: `wastage:${qty}`,
+        notes: `Kitchen wastage recorded for ${params.menuItemName}`,
+      });
+    } catch {
+      await logSensitiveAction({
+        userId: String(user?.id ?? 'unknown'),
+        userName: String(user?.name ?? 'Unknown'),
+        actionType: 'stock_take_record',
+        reference: stockItemId,
+        notes: `Wastage record failed for ${params.menuItemName} qty ${qty}`,
+      });
+    }
   };
   
   const clearOrder = () => {
@@ -1754,6 +2037,19 @@ export default function POSTerminal() {
 
       // Save the merged order (guaranteed only once)
       const saved = upsertActiveOrder({ status: 'sent', sent: true, items: mergedItems });
+      try {
+        await logSensitiveAction({
+          userId: String(user?.id ?? 'unknown'),
+          userName: String(user?.name ?? 'Unknown'),
+          actionType: 'order_sent',
+          reference: saved.id,
+          previousValue: saved.status,
+          newValue: 'sent',
+          notes: `Order #${saved.orderNo}${saved.tableNo ? ` table ${saved.tableNo}` : ''} sent`,
+        });
+      } catch {
+        // non-blocking
+      }
 
       // debug: removed on-screen merged items
 
@@ -1812,6 +2108,19 @@ export default function POSTerminal() {
       await applyRecipeDeductionsOrThrow();
 
       const saved = upsertActiveOrder({ status: 'paid', paymentMethod: method, sent: false });
+      try {
+        await logSensitiveAction({
+          userId: String(user?.id ?? 'unknown'),
+          userName: String(user?.name ?? 'Unknown'),
+          actionType: 'order_paid',
+          reference: saved.id,
+          previousValue: saved.status,
+          newValue: `paid:${method}`,
+          notes: `Order #${saved.orderNo}${saved.tableNo ? ` table ${saved.tableNo}` : ''} paid`,
+        });
+      } catch {
+        // non-blocking
+      }
 
       setReceiptOrder(saved);
       setShowReceipt(true);
@@ -2959,7 +3268,7 @@ export default function POSTerminal() {
                       className="h-8 w-8"
                       onClick={(e) => {
                         e.stopPropagation();
-                        updateQuantity(item.id, -1);
+                        void updateQuantity(item.id, -1);
                       }}
                     >
                       <Minus className="h-3 w-3" />
@@ -2971,7 +3280,7 @@ export default function POSTerminal() {
                       className="h-8 w-8"
                       onClick={(e) => {
                         e.stopPropagation();
-                        updateQuantity(item.id, 1);
+                        void updateQuantity(item.id, 1);
                       }}
                     >
                       <Plus className="h-3 w-3" />
@@ -3004,7 +3313,7 @@ export default function POSTerminal() {
                           type="number"
                           value={selectedOrderItem.quantity}
                           min={1}
-                          onChange={(e) => setQuantity(selectedOrderItem.id, Number(e.target.value))}
+                          onChange={(e) => void setQuantity(selectedOrderItem.id, Number(e.target.value))}
                         />
                       </div>
                       <div>
@@ -3015,7 +3324,7 @@ export default function POSTerminal() {
                           value={selectedOrderItem.discountPercent ?? 0}
                           min={0}
                           max={100}
-                          onChange={(e) => setDiscountPercent(selectedOrderItem.id, Number(e.target.value))}
+                          onChange={(e) => void setDiscountPercent(selectedOrderItem.id, Number(e.target.value))}
                         />
                       </div>
                     </div>
@@ -3356,6 +3665,149 @@ export default function POSTerminal() {
         </DialogContent>
       </Dialog>
 
+      <Dialog
+        open={overrideOpen}
+        onOpenChange={(next) => {
+          setOverrideOpen(next);
+          if (!next) resolveOverrideRequest(false);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Supervisor Approval Required</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="text-sm text-muted-foreground">{overrideReason || 'This action requires supervisor/admin approval.'}</div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Supervisor/Admin Email</div>
+              <Input
+                value={overrideEmail}
+                onChange={(e) => setOverrideEmail(e.target.value)}
+                placeholder="name@company.com"
+                autoComplete="username"
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium">PIN</div>
+              <Input
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                value={overridePin}
+                onChange={(e) => setOverridePin(e.target.value)}
+                placeholder="4-digit PIN"
+                autoComplete="current-password"
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Reason code</div>
+              <select
+                className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+                value={overrideReasonCode}
+                onChange={(e) => setOverrideReasonCode(e.target.value)}
+              >
+                <option value="manager_approval">Manager approval</option>
+                <option value="discount_exception">Discount exception</option>
+                <option value="kitchen_sent_adjustment">Kitchen-sent adjustment</option>
+                <option value="customer_resolution">Customer resolution</option>
+              </select>
+            </div>
+            {overrideError ? <div className="text-sm text-destructive">{overrideError}</div> : null}
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setOverrideOpen(false);
+                  resolveOverrideRequest(false);
+                }}
+                disabled={overrideBusy}
+              >
+                Cancel
+              </Button>
+              <Button onClick={() => void submitOverrideApproval()} disabled={overrideBusy}>
+                {overrideBusy ? 'Verifying...' : 'Approve'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={kitchenWasteOpen}
+        onOpenChange={(next) => {
+          setKitchenWasteOpen(next);
+          if (!next) {
+            const ctx = kitchenWasteContextRef.current;
+            kitchenWasteContextRef.current = null;
+            if (ctx?.resolve) ctx.resolve({ approved: false, captureWaste: false, qty: 0, reason: '' });
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Kitchen Void Wastage</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="text-sm text-muted-foreground">
+              This item was already sent to kitchen. Record wastage only if prep started.
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Wastage quantity</div>
+              <Input
+                type="number"
+                min={1}
+                value={kitchenWasteQty}
+                onChange={(e) => setKitchenWasteQty(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+              />
+            </div>
+            <div className="space-y-1">
+              <div className="text-sm font-medium">Reason</div>
+              <Input
+                value={kitchenWasteReason}
+                onChange={(e) => setKitchenWasteReason(e.target.value)}
+                placeholder="Reason for wastage"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                disabled={kitchenWasteBusy}
+                onClick={() => finalizeKitchenWasteDecision({ approved: false, captureWaste: false, qty: 0, reason: '' })}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="outline"
+                disabled={kitchenWasteBusy}
+                onClick={() =>
+                  finalizeKitchenWasteDecision({
+                    approved: true,
+                    captureWaste: false,
+                    qty: 0,
+                    reason: kitchenWasteReason.trim() || 'No wastage recorded',
+                  })
+                }
+              >
+                Continue (No Waste)
+              </Button>
+              <Button
+                disabled={kitchenWasteBusy}
+                onClick={() =>
+                  finalizeKitchenWasteDecision({
+                    approved: true,
+                    captureWaste: true,
+                    qty: kitchenWasteQty,
+                    reason: kitchenWasteReason.trim() || 'Kitchen void wastage',
+                  })
+                }
+              >
+                Record Waste & Continue
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={showSessionReceipts} onOpenChange={setShowSessionReceipts}>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
@@ -3438,7 +3890,7 @@ export default function POSTerminal() {
                 min={0}
                 max={100}
                 value={orderDiscountPercent}
-                onChange={(e) => setOrderDiscountPercent(Number(e.target.value) || 0)}
+                onChange={(e) => void setOrderDiscountPercentSafe(Number(e.target.value) || 0)}
               />
             </div>
 
