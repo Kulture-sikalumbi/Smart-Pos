@@ -327,6 +327,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
         setBrand(nextBrand);
         setBrandIsActive(resolveBrandIsActive(nextBrand));
+        try {
+          const targetBrandId = String(nextAccountUser.brand_id ?? (nextBrand?.id ?? '')).trim();
+          if (targetBrandId) localStorage.setItem(`${OPERATOR_KEY_PREFIX}${targetBrandId}`, String(nextAccountUser.id));
+        } catch {
+          // ignore
+        }
         setActiveUserId(userId);
         saveAuthSnapshot({
           v: 1,
@@ -481,6 +487,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             brand_id: acct.brand_id ?? ((snap.brand as any)?.id ?? null),
             createdAt: undefined,
           });
+          try {
+            const targetBrandId = String(acct.brand_id ?? ((snap.brand as any)?.id ?? '')).trim();
+            if (targetBrandId) localStorage.setItem(`${OPERATOR_KEY_PREFIX}${targetBrandId}`, String(acct.id ?? userId));
+          } catch {
+            // ignore
+          }
           setLoading(false);
         }
 
@@ -534,7 +546,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           try {
             const rawId = localStorage.getItem(`${OPERATOR_KEY_PREFIX}${brand.id}`);
             const operatorId = rawId ? String(rawId) : null;
-            if (operatorId) {
+            const canAutoRestoreOperator = !accountUser && Boolean(operatorPin);
+            if (operatorId && canAutoRestoreOperator) {
               const match = list.find((u) => u.id === operatorId);
               if (match) setUser(match);
             }
@@ -546,7 +559,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // ignore
       }
     })();
-  }, [brand]);
+  }, [brand, accountUser, operatorPin]);
 
   const operatorUsers: BrandStaffUser[] = React.useMemo(() => {
     // Ensure current operator is always present in the list (even when unauthenticated)
@@ -764,6 +777,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setOperatorPin(cleanPin);
       setLoading(false);
       setProfileReady(true);
+      try {
+        const targetBrandId = String((nextBrand as any)?.id ?? row.brand_id ?? '').trim();
+        if (targetBrandId) localStorage.setItem(`${OPERATOR_KEY_PREFIX}${targetBrandId}`, String(staffUser.id));
+      } catch {
+        // ignore
+      }
 
       saveStaffSession({ v: 1, staff: staffUser, brand: nextBrand, operatorPin: cleanPin, cachedAt: Date.now() });
 

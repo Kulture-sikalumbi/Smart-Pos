@@ -41,12 +41,12 @@ export default function FrontOfficeHome() {
         {visibleTools.map((tool) => (
           <Card
             key={tool.path}
-            className="cursor-pointer border-emerald-500/20 hover:border-emerald-400/60 transition-colors"
+            className="cursor-pointer border-primary/20 hover:border-primary/60 transition-colors"
             onClick={() => navigate(tool.path)}
           >
             <CardHeader>
               <CardTitle className="flex items-center gap-3 text-base">
-                <tool.icon className="h-5 w-5 text-emerald-400" />
+                <tool.icon className="h-5 w-5 text-primary" />
                 {tool.label}
               </CardTitle>
             </CardHeader>

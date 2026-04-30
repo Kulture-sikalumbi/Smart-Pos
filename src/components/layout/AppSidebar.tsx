@@ -167,8 +167,8 @@ export function AppSidebar() {
 
   const workspaceAccentClass =
     workspace === 'back'
-      ? 'border-r-2 border-r-blue-500/60 shadow-[inset_0_0_0_1px_rgba(59,130,246,0.15)]'
-      : 'border-r-2 border-r-emerald-400/70 shadow-[inset_0_0_0_1px_rgba(16,185,129,0.18)]';
+      ? 'border-r-2 border-r-primary/60 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.22)]'
+      : 'border-r-2 border-r-primary/80 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.30)]';
 
   return (
     <Sidebar className={cn('border-r border-sidebar-border', workspaceAccentClass)}>

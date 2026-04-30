@@ -283,7 +283,7 @@ export default function MenuItemCard({ item, onAdd, className }: Props) {
   return (
     <Card
       className={cn(
-        'group relative overflow-hidden bg-muted/30 hover:ring-2 hover:ring-primary transition-all active:scale-[0.99] aspect-[4/3]',
+        'group relative overflow-hidden border-2 border-primary/45 bg-card/90 hover:ring-2 hover:ring-primary/80 hover:shadow-[0_8px_26px_hsl(var(--primary)/0.24)] transition-all active:scale-[0.99] aspect-[4/3]',
         className,
         lowStock ? 'opacity-85' : 'cursor-pointer'
       )}
@@ -386,12 +386,12 @@ export default function MenuItemCard({ item, onAdd, className }: Props) {
               e.currentTarget.src = '/menu/placeholder-burger.svg';
             }}
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/25 to-transparent" />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
         </div>
 
         <div className="relative h-full p-3 flex flex-col justify-between">
           <div className="flex items-start justify-end">
-            <div className="rounded-full bg-black/45 px-2 py-0.5 text-[10px] font-medium text-white/90">
+            <div className="rounded-full border border-primary/45 bg-black/45 px-2 py-0.5 text-[10px] font-medium text-white/95">
               {item.code}
             </div>
           </div>
@@ -406,12 +406,12 @@ export default function MenuItemCard({ item, onAdd, className }: Props) {
         </div>
       </CardContent>
       {lowStock ? (
-        <div className="absolute top-2 left-2 rounded-md bg-red-600 px-2 py-0.5 text-xs font-semibold text-white">Low Stock</div>
+        <div className="absolute top-2 left-2 rounded-md border border-red-300/70 bg-red-600/95 px-2 py-0.5 text-xs font-semibold text-white">Low Stock</div>
       ) : null}
       {stockStatus?.out ? (
-        <div className="absolute top-2 left-2 rounded-md bg-red-600 px-2 py-0.5 text-xs font-semibold text-white">Out of stock</div>
+        <div className="absolute top-2 left-2 rounded-md border border-red-300/70 bg-red-600/95 px-2 py-0.5 text-xs font-semibold text-white">Out of stock</div>
       ) : stockStatus?.atReorder ? (
-        <div className="absolute top-2 left-2 rounded-md bg-amber-500 px-2 py-0.5 text-xs font-semibold text-white">Restock soon</div>
+        <div className="absolute top-2 left-2 rounded-md border border-amber-200/80 bg-amber-500/95 px-2 py-0.5 text-xs font-semibold text-white">Restock soon</div>
       ) : null}
       {stockStatus?.msg ? (
         <div className="absolute bottom-2 left-2 right-2 rounded-md bg-black/55 px-2 py-1 text-[11px] text-white">

@@ -18,7 +18,7 @@ const SyncStatusIndicator = () => {
   } else if (isSyncing) {
     statusText = `Syncing (${pendingCount})...`;
     StatusIcon = RefreshCw;
-    color = 'text-blue-500 animate-spin';
+    color = 'text-primary animate-spin';
   } else if (pendingCount > 0) {
     statusText = `Pending (${pendingCount})`;
     StatusIcon = RefreshCw;

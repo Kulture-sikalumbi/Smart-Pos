@@ -187,6 +187,17 @@ async function sendOrderToSupabase(order: Order) {
       }
 
       try {
+        const { error: todayReceiptError } = await supabase!
+          .from('pos_receipts_today')
+          .upsert(receiptPayload, { onConflict: 'brand_id,order_id' });
+        if (todayReceiptError) {
+          console.warn('[orderStore] failed to upsert pos_receipts_today', todayReceiptError);
+        }
+      } catch (e) {
+        console.warn('[orderStore] pos_receipts_today upsert exception', e);
+      }
+
+      try {
         const invoiceOrderId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(remoteOrderId)
           ? remoteOrderId
           : null;

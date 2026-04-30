@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import type { Order } from '@/types/pos';
 import { Printer } from 'lucide-react';
 import { getReceiptSettings } from '@/lib/receiptSettingsService';
+import { useBranding } from '@/contexts/BrandingContext';
 
 function formatMoneyFallback(amount: number, currencyCode: string) {
   const value = Number.isFinite(amount) ? amount : 0;
@@ -29,12 +30,27 @@ export default function ReceiptPrintDialog(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   appName: string;
+  brandName?: string | null;
+  brandTagline?: string | null;
+  logoUrl?: string | null;
   order: Order | null;
   formatMoney?: (amount: number) => string;
 }) {
-  const { open, onOpenChange, appName, order, formatMoney } = props;
+  const { open, onOpenChange, appName, brandName, brandTagline, logoUrl, order, formatMoney } = props;
+  const { settings: brandingSettings } = useBranding();
 
   const settings = useMemo(() => getReceiptSettings(), []);
+  const receiptBrandName =
+    String(brandName ?? '').trim() ||
+    String(brandingSettings.appName ?? '').trim() ||
+    appName;
+  const receiptTagline =
+    String(brandTagline ?? '').trim() ||
+    String(brandingSettings.tagline ?? '').trim();
+  const receiptLogoUrl =
+    String(logoUrl ?? '').trim() ||
+    String((brandingSettings as any).logoDataUrl ?? '').trim() ||
+    String(settings.logoUrl ?? '').trim();
   const [barcodeDataUrl, setBarcodeDataUrl] = useState<string | null>(null);
 
   const receiptCode = useMemo(() => {
@@ -125,18 +141,18 @@ export default function ReceiptPrintDialog(props: {
         {!order ? (
           <div className="text-sm text-muted-foreground">No receipt available yet.</div>
         ) : (
-          <div className="print-area rounded-lg border bg-background p-4">
+          <div className="print-area rounded-lg border border-black/20 bg-white p-4 text-black">
             <div className="text-center">
-              {settings.logoUrl ? (
+              {receiptLogoUrl ? (
                 <div className="mb-2 flex justify-center">
-                  <img src={settings.logoUrl} alt="Receipt logo" className="h-10 w-10 rounded object-cover border border-border" />
+                  <img src={receiptLogoUrl} alt="Receipt logo" className="h-16 w-16 rounded object-cover border border-border" />
                 </div>
               ) : null}
-              <div className="text-lg font-bold tracking-tight">{appName}</div>
-              <div className="text-xs text-muted-foreground">Thank you for your purchase</div>
+              <div className="text-lg font-bold tracking-tight">{receiptBrandName}</div>
+              <div className="text-xs text-black/70">{receiptTagline || 'Thank you for your purchase'}</div>
             </div>
 
-            <div className="mt-3 text-xs text-muted-foreground flex items-start justify-between">
+            <div className="mt-3 text-xs text-black/70 flex items-start justify-between">
               <div>
                 <div>Order: #{order.orderNo ?? order.id}</div>
                 {order.tableNo ? <div>Table: {order.tableNo}</div> : null}
@@ -162,10 +178,10 @@ export default function ReceiptPrintDialog(props: {
                       <div className="min-w-0">
                         <div className="font-medium truncate">{it.menuItemName}</div>
                         {(it.modifiers?.length ?? 0) > 0 ? (
-                          <div className="text-[11px] text-muted-foreground truncate">{it.modifiers?.join(' · ')}</div>
+                          <div className="text-[11px] text-black/70 truncate">{it.modifiers?.join(' · ')}</div>
                         ) : null}
                         {it.notes ? (
-                          <div className="text-[11px] text-muted-foreground truncate">Note: {it.notes}</div>
+                          <div className="text-[11px] text-black/70 truncate">Note: {it.notes}</div>
                         ) : null}
                       </div>
                       <div className="text-right tabular-nums">{it.quantity}</div>
@@ -182,12 +198,12 @@ export default function ReceiptPrintDialog(props: {
                 <span className="tabular-nums">{formatMoney ? formatMoney(order.subtotal) : formatMoneyFallback(order.subtotal, settings.currencyCode)}</span>
               </div>
               {order.discountAmount > 0 ? (
-                <div className="flex justify-between text-muted-foreground">
+                <div className="flex justify-between text-black/70">
                   <span>Discount ({(order.discountPercent ?? 0).toFixed(0)}%)</span>
                   <span className="tabular-nums">− {formatMoney ? formatMoney(order.discountAmount) : formatMoneyFallback(order.discountAmount, settings.currencyCode)}</span>
                 </div>
               ) : null}
-              <div className="flex justify-between text-muted-foreground">
+              <div className="flex justify-between text-black/70">
                 <span>VAT (16%)</span>
                 <span className="tabular-nums">{formatMoney ? formatMoney(order.tax) : formatMoneyFallback(order.tax, settings.currencyCode)}</span>
               </div>
@@ -197,8 +213,8 @@ export default function ReceiptPrintDialog(props: {
               </div>
             </div>
 
-            <div className="mt-3 text-[11px] text-muted-foreground text-center">
-              Powered by {appName}
+            <div className="mt-3 text-[11px] text-black/70 text-center">
+              Powered by {receiptBrandName}
             </div>
 
             <div className="mt-4 pt-3 border-t text-center">
@@ -209,12 +225,12 @@ export default function ReceiptPrintDialog(props: {
                   className="mx-auto h-24 w-24"
                 />
               ) : null}
-              <div className="mt-1 text-[11px] text-muted-foreground">Receipt Code</div>
+              <div className="mt-1 text-[11px] text-black/70">Receipt Code</div>
               <div className="text-xs font-mono tabular-nums">{receiptCode}</div>
               {settings.digitalReceiptBaseUrl ? (
-                <div className="mt-1 text-[10px] text-muted-foreground">Scan to view digital receipt</div>
+                <div className="mt-1 text-[10px] text-black/70">Scan to view digital receipt</div>
               ) : (
-                <div className="mt-1 text-[10px] text-muted-foreground">Scan for order reference</div>
+                <div className="mt-1 text-[10px] text-black/70">Scan for order reference</div>
               )}
             </div>
           </div>

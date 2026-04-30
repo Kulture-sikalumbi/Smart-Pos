@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -11,6 +11,9 @@ import { RefreshCw, BellRing, ShoppingCart, Sparkles, ShieldCheck } from 'lucide
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
 import { useInstallPrompt } from '@/components/common/InstallPrompt';
+import { useBranding } from '@/contexts/BrandingContext';
+import { hexToHslVar } from '@/lib/color';
+import { defaultCompanySettings } from '@/lib/companySettingsStore';
 
 type TabletMenuRow = {
   brand_id: string;
@@ -56,6 +59,33 @@ export default function TabletLockMode() {
   const navigate = useNavigate();
   const { currencyCode, formatNumber } = useCurrency();
   const { canPrompt, isInstalled, fallbackHint, promptInstall } = useInstallPrompt();
+  const { settings } = useBranding();
+  const tabletBrandTheme = useMemo(() => {
+    const hex = String(settings.primaryColorHex ?? '').trim();
+    if (!hex || hex.toLowerCase() === String(defaultCompanySettings.primaryColorHex).toLowerCase()) return null;
+    const hsl = hexToHslVar(hex);
+    if (!hsl) return null;
+    const hue = Number.parseFloat(String(hsl).split(' ')[0] ?? '24');
+    const safeHue = Number.isFinite(hue) ? hue : 24;
+    return {
+      '--primary': hsl,
+      '--ring': hsl,
+      '--foreground': `${safeHue} 34% 8%`,
+      '--background': `${safeHue} 58% 95%`,
+      '--card': `${safeHue} 54% 98%`,
+      '--card-foreground': `${safeHue} 34% 8%`,
+      '--popover': `${safeHue} 54% 98%`,
+      '--popover-foreground': `${safeHue} 34% 8%`,
+      '--secondary': `${safeHue} 52% 90%`,
+      '--secondary-foreground': `${safeHue} 34% 14%`,
+      '--muted': `${safeHue} 44% 88%`,
+      '--muted-foreground': `${safeHue} 20% 30%`,
+      '--accent': `${safeHue} 52% 86%`,
+      '--accent-foreground': `${safeHue} 34% 14%`,
+      '--border': `${safeHue} 42% 74%`,
+      '--input': `${safeHue} 42% 74%`,
+    } as CSSProperties;
+  }, [settings.primaryColorHex]);
   const [kioskEnabled, setKioskEnabled] = useState(() => {
     try {
       const fromUrl = new URLSearchParams(window.location.search).get('kiosk');
@@ -489,7 +519,16 @@ export default function TabletLockMode() {
   };
 
   return (
-    <div className={cn('min-h-screen bg-gradient-to-b from-background via-background to-muted/20 p-3 sm:p-4', kioskEnabled && 'select-none')}>
+    <div
+      className={cn(
+        'min-h-screen p-3 sm:p-4',
+        tabletBrandTheme
+          ? 'bg-[radial-gradient(90%_66%_at_50%_-10%,hsl(var(--primary)/0.18),transparent_62%),radial-gradient(42%_36%_at_90%_16%,hsl(var(--primary)/0.12),transparent_76%)]'
+          : 'bg-gradient-to-b from-background via-background to-muted/20',
+        kioskEnabled && 'select-none'
+      )}
+      style={tabletBrandTheme ?? undefined}
+    >
       <div className="mx-auto max-w-6xl space-y-4">
         {kioskEnabled ? (
           <div className="fixed top-0 inset-x-0 z-50 h-2" onClick={handleHiddenExitTap} />

@@ -29,10 +29,52 @@ const applyBrandingToDocument = (settings: CompanySettings) => {
   const hsl = hexToHslVar(settings.primaryColorHex);
   if (hsl) {
     const root = document.documentElement;
+    const parts = String(hsl).split(' ');
+    const hue = Number.parseFloat(parts[0] ?? '220');
+    const sat = Number.parseFloat(String(parts[1] ?? '60').replace('%', ''));
+    const safeHue = Number.isFinite(hue) ? hue : 220;
+    const safeSat = Number.isFinite(sat) ? sat : 60;
+    const isDark = root.classList.contains('dark');
     root.style.setProperty('--primary', hsl);
     root.style.setProperty('--ring', hsl);
     root.style.setProperty('--sidebar-primary', hsl);
     root.style.setProperty('--accent-foreground', hsl);
+
+    // Apply brand hue to major surfaces so branding is visible across pages,
+    // not only borders/buttons.
+    if (isDark) {
+      const surfaceSat = Math.max(30, Math.min(70, safeSat * 0.7));
+      root.style.setProperty('--background', `${safeHue} ${surfaceSat}% 11%`);
+      root.style.setProperty('--card', `${safeHue} ${Math.max(26, surfaceSat - 6)}% 16%`);
+      root.style.setProperty('--popover', `${safeHue} ${Math.max(26, surfaceSat - 6)}% 16%`);
+      root.style.setProperty('--secondary', `${safeHue} ${Math.max(24, surfaceSat - 8)}% 22%`);
+      root.style.setProperty('--muted', `${safeHue} ${Math.max(22, surfaceSat - 10)}% 20%`);
+      root.style.setProperty('--accent', `${safeHue} ${Math.max(24, surfaceSat - 8)}% 23%`);
+      root.style.setProperty('--border', `${safeHue} ${Math.max(18, surfaceSat - 14)}% 30%`);
+      root.style.setProperty('--input', `${safeHue} ${Math.max(18, surfaceSat - 14)}% 30%`);
+      root.style.setProperty('--table-header', `${safeHue} ${Math.max(20, surfaceSat - 12)}% 20%`);
+      root.style.setProperty('--table-row-hover', `${safeHue} ${Math.max(18, surfaceSat - 14)}% 24%`);
+      root.style.setProperty('--table-row-selected', `${safeHue} ${Math.max(16, surfaceSat - 16)}% 28%`);
+      root.style.setProperty('--sidebar-background', `${safeHue} ${Math.max(24, surfaceSat - 10)}% 17%`);
+      root.style.setProperty('--sidebar-accent', `${safeHue} ${Math.max(22, surfaceSat - 12)}% 24%`);
+      root.style.setProperty('--sidebar-border', `${safeHue} ${Math.max(20, surfaceSat - 14)}% 29%`);
+    } else {
+      const surfaceSat = Math.max(38, Math.min(80, safeSat * 0.85));
+      root.style.setProperty('--background', `${safeHue} ${surfaceSat}% 92%`);
+      root.style.setProperty('--card', `${safeHue} ${Math.max(34, surfaceSat - 8)}% 96%`);
+      root.style.setProperty('--popover', `${safeHue} ${Math.max(34, surfaceSat - 8)}% 96%`);
+      root.style.setProperty('--secondary', `${safeHue} ${Math.max(30, surfaceSat - 12)}% 88%`);
+      root.style.setProperty('--muted', `${safeHue} ${Math.max(28, surfaceSat - 14)}% 89%`);
+      root.style.setProperty('--accent', `${safeHue} ${Math.max(30, surfaceSat - 12)}% 86%`);
+      root.style.setProperty('--border', `${safeHue} ${Math.max(24, surfaceSat - 18)}% 72%`);
+      root.style.setProperty('--input', `${safeHue} ${Math.max(24, surfaceSat - 18)}% 72%`);
+      root.style.setProperty('--table-header', `${safeHue} ${Math.max(28, surfaceSat - 14)}% 86%`);
+      root.style.setProperty('--table-row-hover', `${safeHue} ${Math.max(26, surfaceSat - 16)}% 90%`);
+      root.style.setProperty('--table-row-selected', `${safeHue} ${Math.max(24, surfaceSat - 18)}% 82%`);
+      root.style.setProperty('--sidebar-background', `${safeHue} ${Math.max(24, surfaceSat - 16)}% 20%`);
+      root.style.setProperty('--sidebar-accent', `${safeHue} ${Math.max(22, surfaceSat - 18)}% 30%`);
+      root.style.setProperty('--sidebar-border', `${safeHue} ${Math.max(20, surfaceSat - 20)}% 35%`);
+    }
   }
 
   const themeMeta = document.querySelector('meta[name="theme-color"]');

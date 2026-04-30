@@ -90,7 +90,7 @@ export default function GlobalReceiptGenerator(props: {
   })();
 
   return (
-    <Card className="mthunzi-card max-w-md mx-auto">
+    <Card className="mthunzi-card max-w-md mx-auto bg-white text-black border-black/20">
       <CardHeader>
         <CardTitle className="text-base">Receipt</CardTitle>
         {settings.logoUrl ? (
@@ -98,7 +98,7 @@ export default function GlobalReceiptGenerator(props: {
             <img src={settings.logoUrl} alt="Receipt logo" className="h-10 w-10 rounded object-cover border border-border" />
           </div>
         ) : null}
-        <div className="text-xs text-muted-foreground">
+        <div className="text-xs text-black/70">
           <div>Receipt: {receipt.receiptId}</div>
           <div>{new Date(receipt.issuedAt).toLocaleString()}</div>
         </div>
@@ -121,24 +121,24 @@ export default function GlobalReceiptGenerator(props: {
           </div>
         )}
 
-        <div className="flex justify-between pt-2 border-t border-white/10 font-semibold">
+        <div className="flex justify-between pt-2 border-t border-black/10 font-semibold">
           <span>Total</span>
           <span>{totalLine}</span>
         </div>
 
         {receipt.legalFooter && (
-          <div className="pt-3 text-xs text-muted-foreground whitespace-pre-wrap border-t border-white/10">
+          <div className="pt-3 text-xs text-black/70 whitespace-pre-wrap border-t border-black/10">
             {receipt.legalFooter}
           </div>
         )}
 
-        <div className="pt-3 flex flex-col items-center gap-2 border-t border-white/10">
+        <div className="pt-3 flex flex-col items-center gap-2 border-t border-black/10">
           {qrDataUrl ? (
             <img src={qrDataUrl} alt="Receipt QR" className="w-28 h-28" />
           ) : (
-            <div className="text-xs text-muted-foreground">QR not configured</div>
+            <div className="text-xs text-black/70">QR not configured</div>
           )}
-          <div className="text-[10px] text-muted-foreground text-center">
+          <div className="text-[10px] text-black/70 text-center">
             {receipt.countryCode === 'ZM' ? 'Scan to verify / view receipt' : 'Scan for review / view receipt'}
           </div>
         </div>

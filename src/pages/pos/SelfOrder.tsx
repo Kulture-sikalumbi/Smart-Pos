@@ -1,4 +1,4 @@
-import { useMemo, useState, useSyncExternalStore } from 'react';
+import { useMemo, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { useParams } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,10 @@ import { getManufacturingRecipesSnapshot } from '@/lib/manufacturingRecipeStore'
 import { usePosMenu } from '@/hooks/usePosMenu';
 import { useCurrency } from '@/contexts/CurrencyContext';
 import { getFrontStockSnapshot, subscribeFrontStock } from '@/lib/frontStockStore';
+import { useBranding } from '@/contexts/BrandingContext';
+import { hexToHslVar } from '@/lib/color';
+import { defaultCompanySettings } from '@/lib/companySettingsStore';
+import { cn } from '@/lib/utils';
 
 export default function SelfOrder() {
   const { formatMoneyPrecise } = useCurrency();
@@ -24,6 +28,33 @@ export default function SelfOrder() {
   const [cart, setCart] = useState<OrderItem[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const frontStock = useSyncExternalStore(subscribeFrontStock, getFrontStockSnapshot);
+  const { settings } = useBranding();
+  const tabletBrandTheme = useMemo(() => {
+    const hex = String(settings.primaryColorHex ?? '').trim();
+    if (!hex || hex.toLowerCase() === String(defaultCompanySettings.primaryColorHex).toLowerCase()) return null;
+    const hsl = hexToHslVar(hex);
+    if (!hsl) return null;
+    const hue = Number.parseFloat(String(hsl).split(' ')[0] ?? '24');
+    const safeHue = Number.isFinite(hue) ? hue : 24;
+    return {
+      '--primary': hsl,
+      '--ring': hsl,
+      '--foreground': `${safeHue} 34% 8%`,
+      '--background': `${safeHue} 58% 95%`,
+      '--card': `${safeHue} 54% 98%`,
+      '--card-foreground': `${safeHue} 34% 8%`,
+      '--popover': `${safeHue} 54% 98%`,
+      '--popover-foreground': `${safeHue} 34% 8%`,
+      '--secondary': `${safeHue} 52% 90%`,
+      '--secondary-foreground': `${safeHue} 34% 14%`,
+      '--muted': `${safeHue} 44% 88%`,
+      '--muted-foreground': `${safeHue} 20% 30%`,
+      '--accent': `${safeHue} 52% 86%`,
+      '--accent-foreground': `${safeHue} 34% 14%`,
+      '--border': `${safeHue} 42% 74%`,
+      '--input': `${safeHue} 42% 74%`,
+    } as CSSProperties;
+  }, [settings.primaryColorHex]);
 
   const items = useMemo(() => menuItems.filter(i => i.categoryId === selectedCategory && i.isAvailable), [menuItems, selectedCategory]);
 
@@ -144,7 +175,15 @@ export default function SelfOrder() {
   };
 
   return (
-    <div className="p-4 max-w-5xl mx-auto space-y-4">
+    <div
+      className={cn(
+        'p-4 max-w-5xl mx-auto space-y-4',
+        tabletBrandTheme
+          ? 'min-h-screen bg-[radial-gradient(90%_66%_at_50%_-10%,hsl(var(--primary)/0.18),transparent_62%),radial-gradient(42%_36%_at_90%_16%,hsl(var(--primary)/0.12),transparent_76%)]'
+          : ''
+      )}
+      style={tabletBrandTheme ?? undefined}
+    >
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold">Self-Order</h1>
