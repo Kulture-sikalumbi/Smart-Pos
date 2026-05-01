@@ -35,7 +35,7 @@ export default function CompanySettings() {
 
   const preview = useMemo(
     () => ({
-      appName: localName.trim() || 'Mthunzi-Smart',
+      appName: localName.trim() || 'Profit Maker POS',
       tagline: localTagline.trim() || undefined,
       primaryColorHex: localPrimary,
       logoDataUrl: localLogo,
@@ -199,7 +199,7 @@ export default function CompanySettings() {
                 onClick={() => {
                   if (!canManage) return;
                   reset();
-                  setLocalName('Mthunzi-Smart');
+                  setLocalName('Profit Maker POS');
                   setLocalTagline('Back Office + POS');
                   setLocalPrimary('#2563eb');
                   setLocalLogo(undefined);

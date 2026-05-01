@@ -20,6 +20,15 @@ type BrandingContextValue = {
 
 const BrandingContext = createContext<BrandingContextValue | null>(null);
 
+function normalizeLegacyBranding(settings: CompanySettings): CompanySettings {
+  const legacyName = 'Mthunzi-Smart';
+  if (String(settings.appName ?? '').trim() !== legacyName) return settings;
+  return {
+    ...settings,
+    appName: 'Profit Maker POS',
+  };
+}
+
 const applyBrandingToDocument = (settings: CompanySettings) => {
   if (!settings) {
     throw new Error("BrandingProvider: settings is null or undefined.");
@@ -93,7 +102,7 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
   // Load cached settings whenever the active brand changes.
   useEffect(() => {
     clearLegacyCompanySettings();
-    setSettings(getCompanySettings(brandId));
+    setSettings(normalizeLegacyBranding(getCompanySettings(brandId)));
 
     // Quick best-effort sync from the brand row (prevents placeholder flashes).
     if (brandId && brand) {
@@ -132,7 +141,7 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
         if (cancelled) return;
 
         if (server) {
-          setSettings((prev) => ({ ...prev, ...server }));
+          setSettings((prev) => normalizeLegacyBranding({ ...prev, ...server }));
           setBrandExists(true);
         } else {
           setBrandExists(false);

@@ -1,17 +1,33 @@
 <svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#1D4ED8" />
-      <stop offset="40%" stop-color="#2563EB" />
-      <stop offset="100%" stop-color="#3B82F6" />
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#0b1120" />
     </linearGradient>
+    <radialGradient id="sheen" cx="35%" cy="20%" r="85%">
+      <stop offset="0%" stop-color="#e6feff" stop-opacity="0.24" />
+      <stop offset="100%" stop-color="#e6feff" stop-opacity="0" />
+    </radialGradient>
+    <filter id="textGlow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
   </defs>
-  <rect x="16" y="16" width="224" height="224" rx="40" fill="url(#grad)"/>
-  <path d="M60 170L90 130L124 160L168 112L196 146" stroke="white" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="60" cy="170" r="12" fill="white" />
-  <circle cx="90" cy="130" r="12" fill="white" />
-  <circle cx="124" cy="160" r="12" fill="white" />
-  <circle cx="168" cy="112" r="12" fill="white" />
-  <circle cx="196" cy="146" r="12" fill="white" />
-  <text x="128" y="220" text-anchor="middle" font-family="Inter, system-ui, sans-serif" font-size="32" fill="white" font-weight="800">PM+</text>
+  <rect x="8" y="8" width="240" height="240" rx="50" fill="url(#bg)"/>
+  <rect x="8" y="8" width="240" height="240" rx="50" fill="url(#sheen)"/>
+  <rect x="22" y="22" width="212" height="212" rx="40" stroke="#7ffcff" stroke-opacity="0.24" stroke-width="2"/>
+  <text
+    x="128"
+    y="166"
+    text-anchor="middle"
+    font-family="Inter, system-ui, sans-serif"
+    font-size="118"
+    font-weight="800"
+    letter-spacing="-5"
+    fill="#7ffcff"
+    filter="url(#textGlow)"
+  >$++</text>
 </svg>

@@ -1,11 +1,11 @@
 {
-  "name": "Mthunzi",
-  "short_name": "Mthunzi",
+  "name": "Profit Maker POS",
+  "short_name": "ProfitMaker",
   "start_url": ".",
   "display": "standalone",
   "background_color": "#0b0e14",
-  "theme_color": "#2563eb",
-  "description": "Restaurant back office + POS (offline-first)",
+  "theme_color": "#00cfd1",
+  "description": "Profit Maker POS - modern restaurant back office + POS (offline-first)",
   "icons": [
     {
       "src": "./icon.svg",

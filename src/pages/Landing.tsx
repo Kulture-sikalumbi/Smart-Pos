@@ -117,20 +117,21 @@ export default function Landing() {
       <div className="pointer-events-none absolute inset-y-0 left-[42%] w-[60%] bg-gradient-to-r from-cyan-500/10 via-sky-500/8 to-transparent blur-3xl" />
       <div className="pointer-events-none absolute inset-0 opacity-[0.08] [background-image:linear-gradient(rgba(255,255,255,0.18)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.12)_1px,transparent_1px)] [background-size:38px_38px]" />
 
-      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-10 px-5 py-12 lg:flex-row lg:items-center lg:justify-between lg:px-10">
+      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-7 px-5 py-8 lg:flex-row lg:items-center lg:justify-between lg:px-10">
         <motion.div
           initial={{ opacity: 0, y: 24 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5, ease: 'easeOut' }}
           className="w-full max-w-2xl"
         >
-          <p className="text-xs tracking-[0.26em] text-cyan-200 uppercase">Modern restaurant POS</p>
-          <p className="mt-2 text-sm font-semibold text-cyan-100">Profit-Maker POS</p>
-          <h1 className="mt-4 text-4xl font-black leading-tight sm:text-6xl">
-            Point of sale that feels built for service speed.
+          <p className="inline-flex rounded-full border border-cyan-300/35 bg-cyan-400/12 px-3 py-1 text-sm font-bold tracking-[0.12em] text-cyan-100 uppercase shadow-[0_0_26px_rgba(0,255,255,0.2)]">
+            Profit Maker Point of sale
+          </p>
+          <h1 className="mt-3 text-4xl font-black leading-tight sm:text-6xl">
+            Built for Speed, Profit, and Productivity.
           </h1>
-          <p className="mt-5 max-w-xl text-base text-slate-200 sm:text-lg">
-            Run orders, kitchen tickets, table workflows, stock, and shifts from one clean system designed for real restaurant pressure.
+          <p className="mt-4 max-w-xl text-base text-slate-200 sm:text-lg">
+            Manage orders, kitchen flow, tables, stock, and shifts in one streamlined POS designed to increase service speed and daily profit.
           </p>
 
           <div className="mt-7 flex flex-wrap items-center gap-3">
@@ -152,7 +153,7 @@ export default function Landing() {
             ) : null}
           </div>
 
-          <div className="mt-8 grid gap-2 sm:max-w-xl">
+          <div className="mt-6 grid gap-2 sm:max-w-xl">
             {trustHighlights.map((item, idx) => (
               <motion.div
                 key={item.text}
@@ -169,6 +170,19 @@ export default function Landing() {
         </motion.div>
 
         <div className="hidden lg:block w-full max-w-lg lg:max-w-xl">
+          <div className="mb-4 -mt-28 flex flex-col items-center justify-center">
+            <img
+              src="/icon.svg"
+              alt="Profit Maker POS logo"
+              className="h-36 w-36 object-contain drop-shadow-[0_0_22px_rgba(0,255,255,0.55)]"
+            />
+            <div
+              className="mt-2 text-sm font-semibold tracking-[0.22em] text-[#8dffce]"
+              style={{ textShadow: '0 0 9px rgba(153,255,219,0.55)' }}
+            >
+              Profit Maker POS
+            </div>
+          </div>
           <AnimatePresence initial={false}>
             {showLogin ? (
               <motion.div
@@ -177,74 +191,119 @@ export default function Landing() {
                 animate={{ opacity: 1, x: 0, scale: 1 }}
                 exit={{ opacity: 0, x: 40 }}
                 transition={{ duration: 0.28, ease: 'easeOut' }}
-                className="rounded-3xl border border-cyan-400/30 bg-slate-950/70 p-6 shadow-[0_18px_80px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+                className="relative rounded-3xl p-[1.5px]"
               >
-                <div className="mb-4">
-                  <h2 className="text-lg font-bold">{isRegister ? 'Register Account' : 'POS Login'}</h2>
-                  <p className="text-xs text-slate-300">
-                    {isRegister ? 'Create owner/admin account to start setup.' : 'Admin: email + password | Staff: email + 4-digit PIN'}
-                  </p>
-                </div>
-                <form onSubmit={submitLogin} className="space-y-4">
-                  {isRegister ? (
+                <svg
+                  aria-hidden
+                  className="pointer-events-none absolute inset-0 h-full w-full"
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                >
+                  <defs>
+                    <filter id="snakeGlowDesktop" x="-50%" y="-50%" width="200%" height="200%">
+                      <feGaussianBlur stdDeviation="1.6" result="blur" />
+                      <feMerge>
+                        <feMergeNode in="blur" />
+                        <feMergeNode in="SourceGraphic" />
+                      </feMerge>
+                    </filter>
+                  </defs>
+                  <rect
+                    x="0.8"
+                    y="0.8"
+                    width="98.4"
+                    height="98.4"
+                    rx="6"
+                    ry="6"
+                    fill="none"
+                    stroke="rgba(34,211,238,0.22)"
+                    strokeWidth="0.8"
+                  />
+                  <rect
+                    x="0.8"
+                    y="0.8"
+                    width="98.4"
+                    height="98.4"
+                    rx="6"
+                    ry="6"
+                    fill="none"
+                    stroke="#67e8f9"
+                    strokeWidth="0.95"
+                    strokeLinecap="round"
+                    strokeDasharray="18 320"
+                    filter="url(#snakeGlowDesktop)"
+                  >
+                    <animate attributeName="stroke-dashoffset" from="0" to="-338" dur="3.2s" repeatCount="indefinite" />
+                  </rect>
+                </svg>
+                <div className="relative rounded-3xl border border-cyan-300/25 bg-slate-950/82 p-6 shadow-[0_18px_80px_rgba(0,0,0,0.45),0_0_22px_rgba(0,255,255,0.22)] backdrop-blur-xl">
+                  <div className="mb-4">
+                    <h2 className="text-lg font-bold">{isRegister ? 'Register Account' : 'POS Login'}</h2>
+                    <p className="text-xs text-slate-300">
+                      {isRegister ? 'Create owner/admin account to start setup.' : 'Admin: email + password | Staff: email + 4-digit PIN'}
+                    </p>
+                  </div>
+                  <form onSubmit={submitLogin} className="space-y-4">
+                    {isRegister ? (
+                      <div>
+                        <label className="mb-1 block text-xs text-slate-300">Name</label>
+                        <input
+                          type="text"
+                          required
+                          className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-300"
+                          value={displayName}
+                          onChange={(e) => setDisplayName(e.target.value)}
+                        />
+                      </div>
+                    ) : null}
                     <div>
-                      <label className="mb-1 block text-xs text-slate-300">Name</label>
+                      <label className="mb-1 block text-xs text-slate-300">Email</label>
                       <input
-                        type="text"
+                        type="email"
                         required
                         className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-300"
-                        value={displayName}
-                        onChange={(e) => setDisplayName(e.target.value)}
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        autoComplete="username"
                       />
                     </div>
-                  ) : null}
-                  <div>
-                    <label className="mb-1 block text-xs text-slate-300">Email</label>
-                    <input
-                      type="email"
-                      required
-                      className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-300"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      autoComplete="username"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-xs text-slate-300">{isRegister ? 'Password' : 'Password or PIN'}</label>
-                    <input
-                      type="password"
-                      required
-                      className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-300"
-                      value={secret}
-                      onChange={(e) => setSecret(e.target.value)}
-                      autoComplete={isRegister ? 'new-password' : 'current-password'}
-                    />
-                  </div>
-                  {loginError ? <div className="text-sm text-rose-300">{loginError}</div> : null}
-                  <div className="flex items-center justify-between gap-2 pt-1">
-                    <button
-                      type="button"
-                      className="text-xs text-slate-300 underline underline-offset-2 hover:text-white"
-                      onClick={() => setShowLogin(false)}
-                    >
-                      Back
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={busy}
-                      className="rounded-full bg-cyan-400 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:opacity-60"
-                    >
-                      {busy ? (isRegister ? 'Registering...' : 'Signing in...') : (isRegister ? 'Register' : 'Sign in')}
-                    </button>
-                  </div>
-                  <div className="text-xs text-slate-300">
-                    {isRegister ? (
-                      <button type="button" className="underline" onClick={() => setIsRegister(false)}>Already have an account? Sign in</button>
-                    ) : (
-                      <button type="button" className="underline" onClick={() => setIsRegister(true)}>Need an account? Register</button>
-                    )}
-                  </div>
-                </form>
+                    <div>
+                      <label className="mb-1 block text-xs text-slate-300">{isRegister ? 'Password' : 'Password or PIN'}</label>
+                      <input
+                        type="password"
+                        required
+                        className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm text-white outline-none transition focus:border-cyan-300"
+                        value={secret}
+                        onChange={(e) => setSecret(e.target.value)}
+                        autoComplete={isRegister ? 'new-password' : 'current-password'}
+                      />
+                    </div>
+                    {loginError ? <div className="text-sm text-rose-300">{loginError}</div> : null}
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <button
+                        type="button"
+                        className="text-xs text-slate-300 underline underline-offset-2 hover:text-white"
+                        onClick={() => setShowLogin(false)}
+                      >
+                        Back
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={busy}
+                        className="rounded-full bg-cyan-400 px-5 py-2 text-sm font-semibold text-slate-950 transition hover:bg-cyan-300 disabled:opacity-60"
+                      >
+                        {busy ? (isRegister ? 'Registering...' : 'Signing in...') : (isRegister ? 'Register' : 'Sign in')}
+                      </button>
+                    </div>
+                    <div className="text-xs text-slate-300">
+                      {isRegister ? (
+                        <button type="button" className="underline" onClick={() => setIsRegister(false)}>Already have an account? Sign in</button>
+                      ) : (
+                        <button type="button" className="underline" onClick={() => setIsRegister(true)}>Need an account? Register</button>
+                      )}
+                    </div>
+                  </form>
+                </div>
               </motion.div>
             ) : (
               <motion.div
@@ -256,10 +315,10 @@ export default function Landing() {
                 className="rounded-3xl border border-white/15 bg-white/5 p-6 backdrop-blur-md"
               >
                 <div className="text-sm text-slate-100">
-                  <div className="text-cyan-200 text-xs uppercase tracking-[0.2em]">Ready to operate</div>
+                  <div className="text-cyan-200 text-xs uppercase tracking-[0.2em]">Ready to grow profit</div>
                   <div className="mt-2 text-2xl font-bold">Tap Get Started</div>
                   <p className="mt-2 text-slate-300">
-                    Your POS login will slide in here for quick shift access.
+                    When you're ready to make profit, click Get Started to open your secure POS login.
                   </p>
                 </div>
               </motion.div>
@@ -281,28 +340,73 @@ export default function Landing() {
               initial={{ y: -24, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
               exit={{ y: -12, opacity: 0 }}
-              className="relative z-10 w-full max-w-md rounded-2xl border border-cyan-400/30 bg-slate-950/90 p-5"
+              className="relative z-10 w-full max-w-md rounded-2xl p-[1.5px]"
             >
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-base font-bold">{isRegister ? 'Register Account' : 'POS Login'}</h2>
-                <button className="text-sm text-slate-300" onClick={() => setShowLogin(false)}>Close</button>
-              </div>
-              <form onSubmit={submitLogin} className="space-y-3">
-                {isRegister ? (
-                  <input type="text" required placeholder="Name" className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
-                ) : null}
-                <input type="email" required placeholder="Email" className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm" value={email} onChange={(e) => setEmail(e.target.value)} />
-                <input type="password" required placeholder={isRegister ? 'Password' : 'Password or PIN'} className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm" value={secret} onChange={(e) => setSecret(e.target.value)} />
-                {loginError ? <div className="text-xs text-rose-300">{loginError}</div> : null}
-                <div className="flex items-center justify-between">
-                  <button type="button" className="text-xs underline text-slate-300" onClick={() => setIsRegister((v) => !v)}>
-                    {isRegister ? 'Have account? Sign in' : 'Need account? Register'}
-                  </button>
-                  <button type="submit" disabled={busy} className="rounded-full bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950">
-                    {busy ? (isRegister ? 'Registering...' : 'Signing...') : (isRegister ? 'Register' : 'Sign in')}
-                  </button>
+              <svg
+                aria-hidden
+                className="pointer-events-none absolute inset-0 h-full w-full"
+                viewBox="0 0 100 100"
+                preserveAspectRatio="none"
+              >
+                <defs>
+                  <filter id="snakeGlowMobile" x="-50%" y="-50%" width="200%" height="200%">
+                    <feGaussianBlur stdDeviation="1.8" result="blur" />
+                    <feMerge>
+                      <feMergeNode in="blur" />
+                      <feMergeNode in="SourceGraphic" />
+                    </feMerge>
+                  </filter>
+                </defs>
+                <rect
+                  x="1"
+                  y="1"
+                  width="98"
+                  height="98"
+                  rx="8"
+                  ry="8"
+                  fill="none"
+                  stroke="rgba(34,211,238,0.22)"
+                  strokeWidth="0.9"
+                />
+                <rect
+                  x="1"
+                  y="1"
+                  width="98"
+                  height="98"
+                  rx="8"
+                  ry="8"
+                  fill="none"
+                  stroke="#67e8f9"
+                  strokeWidth="1.05"
+                  strokeLinecap="round"
+                  strokeDasharray="16 316"
+                  filter="url(#snakeGlowMobile)"
+                >
+                  <animate attributeName="stroke-dashoffset" from="0" to="-332" dur="3s" repeatCount="indefinite" />
+                </rect>
+              </svg>
+              <div className="relative rounded-2xl border border-cyan-300/25 bg-slate-950/90 p-5 shadow-[0_0_22px_rgba(0,255,255,0.2)]">
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-base font-bold">{isRegister ? 'Register Account' : 'POS Login'}</h2>
+                  <button className="text-sm text-slate-300" onClick={() => setShowLogin(false)}>Close</button>
                 </div>
-              </form>
+                <form onSubmit={submitLogin} className="space-y-3">
+                  {isRegister ? (
+                    <input type="text" required placeholder="Name" className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+                  ) : null}
+                  <input type="email" required placeholder="Email" className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm" value={email} onChange={(e) => setEmail(e.target.value)} />
+                  <input type="password" required placeholder={isRegister ? 'Password' : 'Password or PIN'} className="w-full rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-sm" value={secret} onChange={(e) => setSecret(e.target.value)} />
+                  {loginError ? <div className="text-xs text-rose-300">{loginError}</div> : null}
+                  <div className="flex items-center justify-between">
+                    <button type="button" className="text-xs underline text-slate-300" onClick={() => setIsRegister((v) => !v)}>
+                      {isRegister ? 'Have account? Sign in' : 'Need account? Register'}
+                    </button>
+                    <button type="submit" disabled={busy} className="rounded-full bg-cyan-400 px-4 py-2 text-sm font-semibold text-slate-950">
+                      {busy ? (isRegister ? 'Registering...' : 'Signing...') : (isRegister ? 'Register' : 'Sign in')}
+                    </button>
+                  </div>
+                </form>
+              </div>
             </motion.div>
           </motion.div>
         ) : null}

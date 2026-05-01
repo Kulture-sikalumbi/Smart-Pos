@@ -33,7 +33,6 @@ import {
   Boxes,
   ChefHat,
   ClipboardCheck,
-  Factory,
   Grid3X3,
   LayoutDashboard,
   MonitorSmartphone,
@@ -48,6 +47,7 @@ import {
 import { useLocation, useNavigate } from 'react-router-dom';
 import type { UserRole } from '@/types/auth';
 import { isAdminLikeRole } from '@/types/auth';
+import { ProfitMakerLogo } from '@/components/branding/ProfitMakerLogo';
 
 type NavItemType = {
   id: string;
@@ -177,9 +177,7 @@ export function AppSidebar() {
           {settings.logoDataUrl ? (
             <img src={settings.logoDataUrl} alt={settings.appName} className="h-8 w-8 rounded-lg object-cover border border-sidebar-border bg-sidebar-primary" />
           ) : (
-            <div className="h-8 w-8 rounded-lg bg-sidebar-primary flex items-center justify-center">
-              <Factory className="h-5 w-5 text-sidebar-primary-foreground" />
-            </div>
+            <ProfitMakerLogo size="sm" />
           )}
           {!collapsed && (
             <div>

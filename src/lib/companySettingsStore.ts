@@ -4,7 +4,7 @@ const LEGACY_STORAGE_KEY = 'pmx.companySettings.v1';
 const STORAGE_KEY_PREFIX = 'pmx.companySettings.v1.';
 
 export const defaultCompanySettings: CompanySettings = {
-  appName: 'Mthunzi-Smart',
+  appName: 'Profit Maker POS',
   tagline: 'Back Office + POS',
   primaryColorHex: '#2563eb',
   brandType: 'restaurant',
